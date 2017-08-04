@@ -14,18 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import logging
+import tarfile
 from argparse import Namespace
 from collections import OrderedDict
 from datetime import datetime
 from os import makedirs
-from os.path import dirname, join
+from os.path import basename, dirname
 from socket import getfqdn
 from sys import stdout
-from time import sleep
 from uuid import uuid4
 
-from docker import Client
+import docker
 
 from clusterdock import Constants
 from clusterdock.cluster import Cluster, Node, NodeGroup
@@ -37,7 +38,24 @@ from clusterdock.utils import wait_for_port_open
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+CLDR_MGR_PRINCIPAL_PW = 'cldadmin'
+CLDR_MGR_PRINCIPAL_USER = 'cloudera-scm/admin'
 DEFAULT_CLOUDERA_NAMESPACE = Constants.DEFAULT.cloudera_namespace # pylint: disable=no-member
+KDC_ACL_FILENAME = '/var/kerberos/krb5kdc/kadm5.acl'
+KDC_CONF_FILENAME = '/var/kerberos/krb5kdc/kdc.conf'
+KDC_HOST_NAME = 'kdc'
+KDC_KEYTAB_FILENAME = '/etc/clusterdock/kerberos/sdc.keytab'
+KDC_KRB5_CONF_FILENAME = '/etc/krb5.conf'
+KERBEROS_VOLUME_DIR = '/etc/clusterdock/kerberos'
+#https://www.cloudera.com/documentation/enterprise/5-6-x/topics/cm_sg_prep_for_users_s17.html
+LINUX_USER_ID_START = 1000
+
+# A list of KDC configuration files to be updated on KDC Docker container
+KDC_CONFIG_FILES = [
+    KDC_ACL_FILENAME,
+    KDC_CONF_FILENAME,
+    KDC_KRB5_CONF_FILENAME
+]
 
 def start(args):
     primary_node_image = "{0}/{1}/clusterdock:{2}_{3}_primary-node".format(
@@ -49,8 +67,14 @@ def start(args):
         args.registry_url, args.namespace or DEFAULT_CLOUDERA_NAMESPACE,
         args.cdh_string, args.cm_string
     )
-
     images = [primary_node_image, secondary_node_image]
+
+    if args.kerberos:
+        kdc_node_image = "{0}/{1}/clusterdock:kdc".format(
+            args.registry_url, args.namespace or DEFAULT_CLOUDERA_NAMESPACE
+        )
+        images.append(kdc_node_image)
+
     if args.java:
         java_image = "{0}/{1}/clusterdock:cdh_{2}".format(
             args.registry_url, args.namespace or DEFAULT_CLOUDERA_NAMESPACE,
@@ -71,9 +95,11 @@ def start(args):
 
     primary_node = Node(hostname=args.primary_node[0], network=args.network,
                         image=primary_node_image, ports=[CM_SERVER_PORT, HUE_SERVER_PORT],
+                        volumes=[{'/etc/clusterdock/kerberos': '/etc/sdc/'}] if args.kerberos_principals else [],
                         **{'volumes_from': [java_image]} if args.java else {})
 
     secondary_nodes = [Node(hostname=hostname, network=args.network, image=secondary_node_image,
+                            volumes=[{'/etc/clusterdock/kerberos': '/etc/sdc/'}] if args.kerberos_principals else [],
                             **{'volumes_from': [java_image]} if args.java else {})
                        for hostname in args.secondary_nodes]
 
@@ -81,8 +107,23 @@ def start(args):
     node_groups = [NodeGroup(name='primary', nodes=[primary_node]),
                    secondary_node_group]
 
+    if args.kerberos:
+        kdc_node = Node(hostname=KDC_HOST_NAME, network=args.network,
+                        image=kdc_node_image, volumes=[{KERBEROS_VOLUME_DIR: KERBEROS_VOLUME_DIR}])
+        node_groups.append(NodeGroup(name='kdc', nodes=[kdc_node]))
+
+
     cluster = Cluster(topology='cdh', node_groups=node_groups, network_name=args.network)
     cluster.start()
+
+    # Cloudera cluster nodes - these exclude kdc node
+    cloudera_nodes = [primary_node] + secondary_nodes
+
+    if args.kerberos:
+        install_kdc_server(cluster, args.kerberos_principals)
+        install_kerberos_libs(cluster)
+        if args.kerberos_principals:
+            create_users_on_cloudera_nodes(cluster, args.kerberos_principals)
 
     if args.java:
         set_cm_server_java_home(primary_node, '/usr/java/{0}'.format(args.java))
@@ -133,9 +174,9 @@ def start(args):
     deployment = ClouderaManagerDeployment(cm_server_address=primary_node.ip_address)
     deployment.setup_api_resources()
 
-    if len(cluster) > 2:
+    if len(cloudera_nodes) > 2:
         deployment.add_hosts_to_cluster(secondary_node_fqdn=secondary_nodes[0].fqdn,
-                                        all_fqdns=[node.fqdn for node in cluster])
+                                        all_fqdns=[node.fqdn for node in cloudera_nodes])
 
     if args.java:
         deployment.update_all_hosts_configs(configs={
@@ -168,8 +209,35 @@ def start(args):
                         getfqdn(), hue_server_host_port)
             break
 
-    logger.info("Deploying client configuration...")
-    deployment.cluster.deploy_client_config().wait()
+    realm = cluster.network_name.upper()
+    if args.kerberos:
+        logger.info('Updating config for kerberos...')
+        kerberos_config = {'SECURITY_REALM': realm,
+                           'KDC_HOST': KDC_HOST_NAME,
+                           'KRB_MANAGE_KRB5_CONF': True,
+                           'KRB_ENC_TYPES': 'aes256-cts-hmac-sha1-96'}
+        deployment.cm.update_config(kerberos_config)
+
+        logger.info('Importing kerberos admin credentials...')
+        deployment.cm.import_admin_credentials('{}@{}'.format(CLDR_MGR_PRINCIPAL_USER, realm),
+                                               CLDR_MGR_PRINCIPAL_PW).wait()
+
+        logger.info('Configuring for kerberos...')
+        if not deployment.cluster.configure_for_kerberos().wait().success:
+            raise Exception('Failed to configure for kerberos.')
+
+        logger.info('Deploying cluster client configuration...')
+        if not deployment.cluster.deploy_cluster_client_config().wait().success:
+            raise Exception('Failed to deploy cluster client configurations.')
+
+        for service in deployment.cluster.get_all_services():
+            if service.type == 'HUE':
+                fix_for_hue_kerberos(cluster)
+                break
+
+    logger.info('Deploying client configuration...')
+    if not deployment.cluster.deploy_client_config().wait().success:
+        raise Exception("Failed to deploy client configurations.")
 
     if not args.dont_start_cluster:
         logger.info('Starting cluster...')
@@ -181,16 +249,27 @@ def start(args):
 
         deployment.validate_services_started()
 
+    logger.info("We'd love to know what you think of our CDH topology for clusterdock! Please "
+                "direct any feedback to our community forum at "
+                "http://tiny.cloudera.com/hadoop-101-forum.")
+
+def create_users_on_cloudera_nodes(cluster, kerberos_principals):
+    commands = ['useradd -u {} -g hadoop {}'.format(uid, primary)
+                for uid, primary in enumerate(kerberos_principals.split(','), start=LINUX_USER_ID_START)]
+    cmd = '; '.join(commands)
+    for node_group in cluster.node_groups:
+        if node_group.name in ['primary', 'secondary']:
+            node_group.ssh(cmd)
 
 def restart_cm_server(primary_node):
     logger.info('Restarting CM server...')
     primary_node.ssh('service cloudera-scm-server restart')
 
-
 def restart_cm_agents(cluster):
     logger.info('Restarting CM agents...')
-    cluster.ssh('service cloudera-scm-agent restart')
-
+    for node_group in cluster.node_groups:
+        if node_group.name in ['primary', 'secondary']:
+            node_group.ssh('service cloudera-scm-agent restart')
 
 def change_cm_server_host(cluster, server_host):
     change_server_host_command = (
@@ -200,8 +279,9 @@ def change_cm_server_host(cluster, server_host):
     )
     logger.info("Changing server_host to %s in /etc/cloudera-scm-agent/config.ini...",
                 server_host)
-    cluster.ssh(change_server_host_command)
-
+    for node_group in cluster.node_groups:
+        if node_group.name in ['primary', 'secondary']:
+            node_group.ssh(change_server_host_command)
 
 def set_cm_server_java_home(node, java_home):
     set_cm_server_java_home_command = (
@@ -211,8 +291,138 @@ def set_cm_server_java_home(node, java_home):
                 java_home)
     node.ssh(set_cm_server_java_home_command)
 
-
 def remove_files(cluster, files, nodes):
     logger.info("Removing files (%s) from hosts (%s)...",
                 ', '.join(files), ', '.join([node.fqdn for node in nodes]))
     cluster.ssh('rm -rf {0}'.format(' '.join(files)), nodes=nodes)
+
+def install_kdc_server(cluster, kerberos_principals):
+    logger.info('Installing kdc server on kdc node...')
+    change_config_files(cluster)
+    setup_kdc_server(cluster, kerberos_principals)
+
+def change_config_files(cluster):
+    """
+    Files will be changed for Kerberos configuration reflecting:
+    Kerberos configuration information, including the locations of KDCs and admin servers,
+    defaults for the current realm  etc.
+    Access Control List (ACL).
+    """
+    logger.info('Changing config. files on kdc node...')
+    kdc_node = [node for node_group in cluster.node_groups if node_group.name == 'kdc'
+                for node in node_group.nodes][0]
+
+    client = docker.Client()
+    config_files = {}
+
+    for kdc_conf_file in KDC_CONFIG_FILES:
+        # docker.Client.get_archive returns a tuple containing the raw tar data stream and a
+        # dict of stat information on the specified path. We only care about the former, so
+        # we discard the latter.
+        tarstream = io.BytesIO(client.get_archive(container=kdc_node.container_id,
+                                                  path=kdc_conf_file)[0].read())
+        with tarfile.open(fileobj=tarstream) as tarfile_:
+            for tarinfo in tarfile_.getmembers():
+                # tarfile.extractfile returns a file object, which, when read, returns a
+                # bytes object.
+                config_files[kdc_conf_file] = tarfile_.extractfile(tarinfo).read().decode()
+
+    realm = cluster.network_name.upper()
+    # Update configurations
+    krb5_conf_data = config_files[KDC_KRB5_CONF_FILENAME]
+    krb5_conf_data = krb5_conf_data.replace('EXAMPLE.COM', realm)
+    krb5_conf_data = krb5_conf_data.replace('kerberos.example.com', '{}.{}'.format(KDC_HOST_NAME, cluster.network_name))
+    krb5_conf_data = krb5_conf_data.replace('example.com', cluster.network_name)
+    config_files[KDC_KRB5_CONF_FILENAME] = krb5_conf_data
+
+    kdc_conf_data = config_files[KDC_CONF_FILENAME]
+    kdc_conf_data = kdc_conf_data.replace('EXAMPLE.COM', realm)
+    kdc_conf_data = kdc_conf_data.replace('[kdcdefaults]', '[kdcdefaults]\n max_renewablelife = 7d\n max_life = 1d')
+    config_files[KDC_CONF_FILENAME] = kdc_conf_data
+
+    acl_data = config_files[KDC_ACL_FILENAME]
+    acl_data = acl_data.replace('EXAMPLE.COM', realm)
+    config_files[KDC_ACL_FILENAME] = acl_data
+
+    # Serialize them back to the kdc Docker container
+    for kdc_conf_file in KDC_CONFIG_FILES:
+        tarstream = io.BytesIO()
+        with tarfile.open(fileobj=tarstream, mode='w') as tarfile_:
+            encoded_file_contents = config_files[kdc_conf_file].encode()
+            tarinfo = tarfile.TarInfo(basename(kdc_conf_file))
+            tarinfo.size = len(encoded_file_contents)
+            tarfile_.addfile(tarinfo, io.BytesIO(encoded_file_contents))
+        tarstream.seek(0)
+        client.put_archive(container=kdc_node.container_id, path=dirname(kdc_conf_file), data=tarstream)
+
+def setup_kdc_server(cluster, kerberos_principals):
+    logger.info('Setting up kdc server ...')
+    realm = cluster.network_name.upper()
+    kdc_commands = [
+        'kdb5_util create -s -r {realm} -P kdcadmin'.format(realm=realm),
+        'kadmin.local -q "addprinc -pw {adminpw} admin/admin@{realm}"'.format(adminpw='acladmin', realm=realm),
+        'kadmin.local -q "addprinc -pw {cldradminpw} {cldradmin}@{realm}"'.format(
+            cldradmin=CLDR_MGR_PRINCIPAL_USER,
+            cldradminpw=CLDR_MGR_PRINCIPAL_PW,
+            realm=realm),
+    ]
+
+    # Add the following commands before starting kadmin daemon etc.
+    if kerberos_principals:
+        principal_list = ['{}@{}'.format(primary, realm) for primary in kerberos_principals.split(',')]
+        create_principals_cmds = ['kadmin.local -q "addprinc -randkey {}"'.format(principal)
+                                  for principal in principal_list]
+        kdc_commands.extend(create_principals_cmds)
+        create_keytab_cmd = 'kadmin.local -q "xst -norandkey -k {} {}" '.format(KDC_KEYTAB_FILENAME,
+                                                                                ' '.join(principal_list))
+        kdc_commands.append(create_keytab_cmd)
+
+    kdc_commands.extend([
+        'krb5kdc',
+        'kadmind',
+        'authconfig --enablekrb5 --update',
+        'service sshd restart',
+        'service krb5kdc restart',
+        'service kadmin restart'
+    ])
+
+    # Gather keytab file and krb5.conf file in KERBEROS_VOLUME_DIR directory which is mounted on host.
+    if kerberos_principals:
+        gather_files_cmds = [
+            'chmod 644 {}'.format(KDC_KEYTAB_FILENAME),
+            'cp {} {}'.format(KDC_KRB5_CONF_FILENAME, KERBEROS_VOLUME_DIR)
+        ]
+        kdc_commands.extend(gather_files_cmds)
+
+    kdc_node_group = [node_group for node_group in cluster.node_groups if node_group.name == 'kdc'][0]
+    kdc_node_group.ssh('; '.join(kdc_commands))
+
+def fix_for_hue_kerberos(cluster):
+    """ Fix for Hue service as explained at:
+    http://www.cloudera.com/documentation/manager/5-1-x/Configuring-Hadoop-Security-with-Cloudera-Manager/cm5chs_enable_hue_sec_s10.html
+    """
+    logger.info('Applying fix for hue...')
+    for node_group in cluster.node_groups:
+        if node_group.name == 'kdc':
+            kdc_node_group = node_group
+        elif node_group.name == 'primary':
+            primary_node = node_group.nodes[0]
+
+    realm = cluster.network_name.upper()
+    kdc_hue_commands = [
+        'kadmin.local -q "modprinc -maxrenewlife 90day krbtgt/{realm}"'.format(realm=realm),
+        'kadmin.local -q "modprinc -maxrenewlife 90day +allow_renewable hue/{hue_node_name}@{realm}"'.format(
+            realm=realm,
+            hue_node_name=primary_node.fqdn),
+        'service krb5kdc restart',
+        'service kadmin restart'
+    ]
+    kdc_node_group.ssh('; '.join(kdc_hue_commands))
+
+def install_kerberos_libs(cluster):
+    logger.info('Installing kerberos libs on cloudera nodes ...')
+    for node_group in cluster.node_groups:
+        if node_group.name == 'primary':
+            node_group.ssh('yum -y -q install openldap-clients krb5-libs krb5-workstation')
+        elif node_group.name == 'secondary':
+            node_group.ssh('yum -y -q install krb5-libs krb5-workstation')
