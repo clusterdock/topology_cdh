@@ -1,0 +1,53 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+# # Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# yaml definition file for the CDH topology.
+
+name: CDH
+description: A basic CDH cluster with 1 primary node and n-1 secondary nodes
+
+node groups:
+    primary-node:
+        - node-1
+    secondary-nodes:
+        - node-2
+
+build args:
+    --cdh-version:
+        default: 5.12.0
+        help: CDH version to use
+        metavar: ver
+    --cm-version:
+        default: 5.12.0
+        help: CM version to use
+        metavar: ver
+
+start args:
+    --cdh-version:
+        default: 5.12.0
+        help: CDH version to use
+        metavar: ver
+    --cm-version:
+        default: 5.12.0
+        help: CM version to use
+        metavar: ver
+    --dont-start-cluster:
+        action: store_true
+        help: Don't start clusters/services in Cloudera Manager
+    --exclude-services, -x:
+        help: If specified, a comma-separated list of service types to exclude from the CDH cluster
+        metavar: svc1,svc2,...
+    --include-services, -i:
+        help: If specified, a comma-separated list of service types to include in the CDH cluster
+        metavar: svc1,svc2,...
+    --java:
+        help: If specified, a Java version to use in place of the default value present on the cluster
+        metavar: ver
