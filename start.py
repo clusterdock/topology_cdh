@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import logging
+import re
 import socket
 
 from clusterdock.models import Cluster, client, Node
@@ -20,7 +21,7 @@ from clusterdock.utils import nested_get, wait_for_condition
 from .cm import ClouderaManagerDeployment
 
 CM_PORT = 7180
-CM_AGENT_CONFIG = '/etc/cloudera-scm-agent/config.ini'
+CM_AGENT_CONFIG_FILE_PATH = '/etc/cloudera-scm-agent/config.ini'
 CM_SERVER_ETC_DEFAULT = '/etc/default/cloudera-scm-server'
 DEFAULT_CLUSTER_NAME = 'cluster'
 SECONDARY_NODE_TEMPLATE_NAME = 'Secondary'
@@ -72,7 +73,7 @@ def main(args):
                                              '/etc/localtime']]
     cluster.execute("bash -c '{}'".format('; '.join(filesystem_fix_commands)))
 
-    _change_cm_server_host(cluster, server_host=primary_node.fqdn)
+    _configure_cm_agents(cluster)
 
     # The CDH topology uses two pre-built images ('primary' and 'secondary'). If a cluster
     # larger than 2 nodes is started, some modifications need to be done to the nodes to
@@ -82,20 +83,11 @@ def main(args):
                       files=['/var/lib/cloudera-scm-agent/uuid',
                              '/dfs*/dn/current/*'])
 
+    logger.info('Restarting Cloudera Manager agents ...')
+    _restart_cm_agents(cluster)
 
     logger.info('Waiting for Cloudera Manager server to come online ...')
-
-    def condition(container):
-        container.reload()
-        health_status = nested_get(container.attrs, ['State', 'Health', 'Status'])
-        logger.debug('Cloudera Manager health status evaluated to %s.', health_status)
-        return health_status == 'healthy'
-    def success(time):
-        logger.debug('Cloudera Manager reached healthy state after %s seconds.', time)
-    def failure(timeout):
-        raise TimeoutError('Timed out after {} seconds waiting for Cloudera Manager to start.'.format(timeout))
-    wait_for_condition(condition=condition, condition_args=[primary_node.container],
-                       time_between_checks=3, timeout=180, success=success, failure=failure)
+    _wait_for_cm_server(primary_node)
 
     # Docker for Mac exposes ports that can be accessed only with ``localhost:<port>`` so
     # use that instead of the hostname if the host name is ``moby``.
@@ -106,32 +98,6 @@ def main(args):
 
     # The work we need to do through CM itself begins here...
     deployment = ClouderaManagerDeployment(server_url)
-
-    def condition(deployment, cluster_name):
-        parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
-        for parcel in parcels:
-            if parcel['product'] == 'CDH' and parcel['stage'] in ('ACTIVATING', 'ACTIVATED'):
-                parcel_version = parcel['version']
-                logger.debug('Found CDH parcel with version %s in state %s.',
-                             parcel_version,
-                             parcel['stage'])
-                break
-        else:
-            raise Exception('Could not find activating or activated CDH parcel.')
-
-        logger.debug('CDH parcel is in stage %s ...',
-                     parcel['stage'])
-
-        if parcel['stage'] == 'ACTIVATED':
-            return True
-    def success(time):
-        logger.debug('CDH parcel became activated after %s seconds.', time)
-    def failure(timeout):
-        logger.debug('Timed out after %s seconds waiting for CDH parcel to become activated.',
-                     timeout)
-    wait_for_condition(condition=condition, condition_args=[deployment, DEFAULT_CLUSTER_NAME],
-                       time_between_checks=1, timeout=60, time_to_success=10,
-                       success=success, failure=failure)
 
     # Add all CM hosts to the cluster (i.e. only new hosts that weren't part of the original
     # images).
@@ -154,6 +120,7 @@ def main(args):
                                                     for host_id in host_ids_to_add)),
                      DEFAULT_CLUSTER_NAME)
         deployment.add_cluster_hosts(cluster_name=DEFAULT_CLUSTER_NAME, host_ids=host_ids_to_add)
+        _wait_for_activated_cdh_parcel(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
 
         # Create and apply a host template to ensure that all the secondary nodes have the same
         # CM roles running on them.
@@ -165,6 +132,8 @@ def main(args):
                                        host_template_name=SECONDARY_NODE_TEMPLATE_NAME,
                                        start_roles=False,
                                        host_ids=host_ids_to_add)
+    else:
+        _wait_for_activated_cdh_parcel(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
 
     if args.java:
         java_home = '/usr/java/{}'.format(args.java)
@@ -228,12 +197,35 @@ def _set_cm_server_java_home(node, java_home):
     node.execute(command=command)
 
 
-def _change_cm_server_host(cluster, server_host):
-    command = r'sed -i "s/\(server_host\).*/\1={}/" {}'.format(server_host, CM_AGENT_CONFIG)
-    logger.info('Changing server host to %s in %s ...',
-                server_host,
-                CM_AGENT_CONFIG)
-    cluster.execute(command=command)
+def _configure_cm_agents(cluster):
+    primary_node = next(node for node in cluster if node.group == 'primary')
+    cm_agent_config = primary_node.get_file(CM_AGENT_CONFIG_FILE_PATH)
+    for node in cluster:
+        logger.info('Changing CM agent configs on %s ...', node.fqdn)
+
+        node_ip_address = nested_get(node.container.attrs,
+                                     ['NetworkSettings',
+                                      'Networks',
+                                      cluster.network,
+                                      'IPAddress'])
+        logger.debug('Changing server_host to %s ...', primary_node.fqdn)
+
+        # During container start, a race condition can occur where the hostname passed in
+        # to Docker gets overriden by a start script in /etc/rc.sysinit. To avoid this,
+        # we manually set the hostnames and IP addresses that CM agents use.
+        logger.debug('Changing listening IP to %s ...', node_ip_address)
+        logger.debug('Changing listening hostname to %s ...', node.fqdn)
+        logger.debug('Changing reported hostname to %s ...', node.fqdn)
+        node.put_file(CM_AGENT_CONFIG_FILE_PATH,
+                      re.sub(r'.*(reported_hostname).*',
+                             r'\1={}'.format(node.fqdn),
+                             re.sub(r'.*(listening_hostname).*',
+                                    r'\1={}'.format(node.fqdn),
+                                    re.sub(r'.*(listening_ip).*',
+                                           r'\1={}'.format(node_ip_address),
+                                           re.sub(r'(server_host)=.*',
+                                                  r'\1={}'.format(primary_node.fqdn),
+                                                  cm_agent_config)))))
 
 
 def _remove_files(nodes, files):
@@ -248,6 +240,53 @@ def _remove_files(nodes, files):
 def _restart_cm_agents(cluster):
     command = 'service cloudera-scm-agent restart'
     cluster.execute(command=command, quiet=True)
+
+
+def _wait_for_cm_server(primary_node):
+    def condition(container):
+        container.reload()
+        health_status = nested_get(container.attrs, ['State', 'Health', 'Status'])
+        logger.debug('Cloudera Manager health status evaluated to %s.', health_status)
+        return health_status == 'healthy'
+
+    def success(time):
+        logger.debug('Cloudera Manager reached healthy state after %s seconds.', time)
+
+    def failure(timeout):
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'for Cloudera Manager to start.'.format(timeout))
+    wait_for_condition(condition=condition, condition_args=[primary_node.container],
+                       time_between_checks=3, timeout=180, success=success, failure=failure)
+
+
+def _wait_for_activated_cdh_parcel(deployment, cluster_name):
+    def condition(deployment, cluster_name):
+        parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
+        for parcel in parcels:
+            if parcel['product'] == 'CDH' and parcel['stage'] in ('ACTIVATING', 'ACTIVATED'):
+                parcel_version = parcel['version']
+                logger.debug('Found CDH parcel with version %s in state %s.',
+                             parcel_version,
+                             parcel['stage'])
+                break
+        else:
+            raise Exception('Could not find activating or activated CDH parcel.')
+
+        logger.debug('CDH parcel is in stage %s ...',
+                     parcel['stage'])
+
+        if parcel['stage'] == 'ACTIVATED':
+            return True
+
+    def success(time):
+        logger.debug('CDH parcel became activated after %s seconds.', time)
+
+    def failure(timeout):
+        logger.debug('Timed out after %s seconds waiting for CDH parcel to become activated.',
+                     timeout)
+    wait_for_condition(condition=condition, condition_args=[deployment, cluster_name],
+                       time_between_checks=1, timeout=60, time_to_success=10,
+                       success=success, failure=failure)
 
 
 def _create_secondary_node_template(deployment, cluster_name, secondary_node):
