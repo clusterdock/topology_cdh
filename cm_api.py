@@ -240,12 +240,10 @@ class ApiClient:
         Returns:
             A dictionary (command) of the submitted command.
         """
-        return self._post(
-            endpoint=('{}/clusters/{}/services/{}/'
-                      'commands/hiveUpdateMetastoreNamenodes').format(self.api_version,
-                                                                      cluster_name,
-                                                                      service_name)
-        ).json()
+        return self._post(endpoint=('{}/clusters/{}/services/{}/commands/'
+                                    'hiveUpdateMetastoreNamenodes').format(self.api_version,
+                                                                           cluster_name,
+                                                                           service_name)).json()
 
     def update_cm_config(self, config_list):
         """Update CM configuration values.
@@ -303,7 +301,7 @@ class ApiClient:
         """
         return self._post(endpoint=('{}/clusters/{}/commands/'
                                     'deployClientConfig').format(self.api_version,
-                                                                 cluster_name).json())
+                                                                 cluster_name)).json()
 
     def start_all_cluster_services(self, cluster_name):
         """Start all cluster services in the cluster.
