@@ -58,6 +58,17 @@ class ClouderaManagerDeployment:
         return self.api_client.get_cluster_parcels(cluster_name=cluster_name,
                                                    view=view)['items']
 
+    def get_cluster_parcel_usage(self, cluster_name):
+        """Get detailed parcel usage for a cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+
+        Returns:
+            A dictionary (parcel usage) of the parcels in use on the cluster.
+        """
+        return self.api_client.get_cluster_parcel_usage(cluster_name=cluster_name)
+
     def get_host(self, host_id):
         """Get information about a specific host in the deployment.
 

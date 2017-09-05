@@ -74,6 +74,18 @@ class ApiClient:
                                                                   cluster_name),
                          params={'view': view}).json()
 
+    def get_cluster_parcel_usage(self, cluster_name):
+        """Get detailed parcel usage for a cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+
+        Returns:
+            A dictionary (parcel usage) of the parcels in use on the cluster.
+        """
+        return self._get(endpoint='{}/clusters/{}/parcels/usage'.format(self.api_version,
+                                                                        cluster_name)).json()
+
     def get_host(self, host_id):
         """Get information about a specific host in the deployment.
 
