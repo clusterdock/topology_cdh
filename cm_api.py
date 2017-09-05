@@ -177,10 +177,10 @@ class ApiClient:
         Returns:
             A dictionary (role config group list) of the role config groups of the service.
         """
-        return self._get(endpoint='{}/clusters/{}/services/{}/'
-                                     'roleConfigGroups'.format(self.api_version,
-                                                               cluster_name,
-                                                               service_name)).json()
+        return self._get(endpoint=('{}/clusters/{}/services/{}/'
+                                   'roleConfigGroups').format(self.api_version,
+                                                              cluster_name,
+                                                              service_name)).json()
 
     def update_service_role_config_group_config(self, cluster_name, service_name,
                                                 role_config_group_name, config_list):
@@ -195,11 +195,11 @@ class ApiClient:
         Returns:
             A dictionary (config list) of the updated service role config group configuration.
         """
-        return self._put(endpoint='{}/clusters/{}/services/{}/'
-                                     'roleConfigGroups/{}/config'.format(self.api_version,
-                                                                         cluster_name,
-                                                                         service_name,
-                                                                         role_config_group_name),
+        return self._put(endpoint=('{}/clusters/{}/services/{}/'
+                                   'roleConfigGroups/{}/config').format(self.api_version,
+                                                                        cluster_name,
+                                                                        service_name,
+                                                                        role_config_group_name),
                          data=config_list).json()
 
     def update_service_config(self, cluster_name, service_name, service_config):
@@ -241,9 +241,10 @@ class ApiClient:
             A dictionary (command) of the submitted command.
         """
         return self._post(
-            endpoint='{}/clusters/{}/services/{}/commands/hiveUpdateMetastoreNamenodes'.format(self.api_version,
-                                                                                               cluster_name,
-                                                                                               service_name)
+            endpoint=('{}/clusters/{}/services/{}/'
+                      'commands/hiveUpdateMetastoreNamenodes').format(self.api_version,
+                                                                      cluster_name,
+                                                                      service_name)
         ).json()
 
     def update_cm_config(self, config_list):
@@ -284,10 +285,10 @@ class ApiClient:
         Returns:
             A dictionary (command) of the submitted command.
         """
-        return self._post(endpoint='{}/clusters/{}/hostTemplates/{}/'
-                                      'commands/applyHostTemplate'.format(self.api_version,
-                                                                          cluster_name,
-                                                                          host_template_name),
+        return self._post(endpoint=('{}/clusters/{}/hostTemplates/{}/'
+                                    'commands/applyHostTemplate').format(self.api_version,
+                                                                         cluster_name,
+                                                                         host_template_name),
                           params={'startRoles': start_roles},
                           data=host_ref_list).json()
 
@@ -300,8 +301,9 @@ class ApiClient:
         Returns:
             A dictionary (command) of the submitted command.
         """
-        return self._post(endpoint='{}/clusters/{}/commands/deployClientConfig'.format(self.api_version,
-                                                                                       cluster_name)).json()
+        return self._post(endpoint=('{}/clusters/{}/commands/'
+                                    'deployClientConfig').format(self.api_version,
+                                                                 cluster_name).json())
 
     def start_all_cluster_services(self, cluster_name):
         """Start all cluster services in the cluster.

@@ -11,7 +11,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from topology_cdh import cm_api
-from .cm_api import ApiClient, DEFAULT_CM_PASSWORD, DEFAULT_CM_USERNAME
 
 
 class ClouderaManagerDeployment:

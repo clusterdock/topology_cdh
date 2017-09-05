@@ -13,7 +13,6 @@
 
 import logging
 import socket
-from time import sleep
 
 from clusterdock.models import Cluster, client, Node
 from clusterdock.utils import nested_get, wait_for_condition
@@ -105,10 +104,7 @@ def main(args):
     server_url = 'http://{}:{}'.format(hostname, port)
     logger.info('Cloudera Manager server is now reachable at %s', server_url)
 
-    logger.info('Restarting Cloudera Manager agents ...')
-    _restart_cm_agents(cluster)
-
-    ## The work we need to do through CM itself begins here...
+    # The work we need to do through CM itself begins here...
     deployment = ClouderaManagerDeployment(server_url)
 
     def condition(deployment, cluster_name):
@@ -266,6 +262,7 @@ def _create_secondary_node_template(deployment, cluster_name, secondary_node):
                                     cluster_name=cluster_name,
                                     role_config_group_names=role_config_group_names)
 
+
 def _update_database_configs(deployment, cluster_name, primary_node):
     for service in deployment.get_cluster_services(cluster_name=cluster_name):
         if service['type'] == 'HIVE':
@@ -299,11 +296,12 @@ def _update_database_configs(deployment, cluster_name, primary_node):
                                              service_name=service['name'],
                                              configs=configs)
 
+
 def _update_hive_metastore_namenodes(deployment, cluster_name):
     for service in deployment.get_cluster_services(cluster_name=cluster_name):
         if service['type'] == 'HIVE':
-            command_id = deployment.update_hive_metastore_namenodes(cluster_name=cluster_name,
-                                                                    service_name=service['name'])['id']
+            command_id = deployment.update_hive_metastore_namenodes(cluster_name,
+                                                                    service['name'])['id']
             break
 
     def condition(deployment, command_id):
@@ -314,12 +312,16 @@ def _update_hive_metastore_namenodes(deployment, cluster_name):
         if not active and not success:
             raise Exception('Failed to update Hive Metastore Namenodes.')
         return not active and success
+
     def success(time):
         logger.debug('Updated Hive Metastore Namenodes in %s seconds.', time)
+
     def failure(timeout):
-        raise TimeoutError('Timed out after {} seconds waiting for Hive Metastore Namenodes to update.'.format(timeout))
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'for Hive Metastore Namenodes to update.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, command_id],
                        time_between_checks=3, timeout=180, success=success, failure=failure)
+
 
 def _deploy_client_config(deployment, cluster_name):
     command_id = deployment.deploy_cluster_client_config(cluster_name=cluster_name)['id']
@@ -328,16 +330,21 @@ def _deploy_client_config(deployment, cluster_name):
         command_information = deployment.api_client.get_command_information(command_id)
         active = command_information.get('active')
         success = command_information.get('success')
-        logger.debug('Deploy cluster client config command: (active: %s, success: %s)', active, success)
+        logger.debug('Deploy cluster client config command: (active: %s, success: %s)',
+                     active, success)
         if not active and not success:
             raise Exception('Failed to deploy cluster config.')
         return not active and success
+
     def success(time):
         logger.debug('Deployed cluster client config in %s seconds.', time)
+
     def failure(timeout):
-        raise TimeoutError('Timed out after {} seconds waiting for cluster client config to deploy.'.format(timeout))
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'for cluster client config to deploy.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, command_id],
                        time_between_checks=3, timeout=180, success=success, failure=failure)
+
 
 def _start_cluster(deployment, cluster_name):
     command_id = deployment.start_all_cluster_services(cluster_name=cluster_name)['id']
@@ -350,12 +357,16 @@ def _start_cluster(deployment, cluster_name):
         if not active and not success:
             raise Exception('Failed to start cluster.')
         return not active and success
+
     def success(time):
         logger.debug('Started cluster in %s seconds.', time)
+
     def failure(timeout):
-        raise TimeoutError('Timed out after {} seconds waiting for cluster to start.'.format(timeout))
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'for cluster to start.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, command_id],
                        time_between_checks=3, timeout=600, success=success, failure=failure)
+
 
 def _start_cm_service(deployment):
     command_id = deployment.start_cm_service()['id']
@@ -368,16 +379,21 @@ def _start_cm_service(deployment):
         if not active and not success:
             raise Exception('Failed to start CM service.')
         return not active and success
+
     def success(time):
         logger.debug('Started CM service in %s seconds.', time)
+
     def failure(timeout):
-        raise TimeoutError('Timed out after {} seconds waiting for CM service to start.'.format(timeout))
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'for CM service to start.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, command_id],
                        time_between_checks=3, timeout=180, success=success, failure=failure)
 
+
 def _validate_service_health(deployment, cluster_name):
     def condition(deployment, cluster_name):
-        services = deployment.get_cluster_services(cluster_name=cluster_name) + [deployment.get_cm_service()]
+        services = (deployment.get_cluster_services(cluster_name=cluster_name)
+                    + [deployment.get_cm_service()])
         if all(service.get('serviceState') == 'NA' or
                service.get('serviceState') == 'STARTED' and service.get('healthSummary') == 'GOOD'
                for service in services):
@@ -389,10 +405,13 @@ def _validate_service_health(deployment, cluster_name):
                                    if (service.get('healthSummary') != 'GOOD'
                                        and service.get('serviceState') != 'NA')
                                    or service.get('serviceState') not in ('STARTED', 'NA')))
+
     def success(time):
         logger.debug('Validated service health in %s seconds.', time)
+
     def failure(timeout):
-        raise TimeoutError('Timed out after {} seconds waiting to validate service health.'.format(timeout))
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'to validate service health.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, cluster_name],
                        time_between_checks=3, timeout=600, time_to_success=30,
                        success=success, failure=failure)
