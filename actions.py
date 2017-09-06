@@ -16,6 +16,7 @@
 
 import io
 import logging
+import random
 import tarfile
 from argparse import Namespace
 from collections import OrderedDict
@@ -24,6 +25,7 @@ from os import makedirs
 from os.path import basename, dirname
 from socket import getfqdn
 from sys import stdout
+from time import sleep
 from uuid import uuid4
 
 import docker
@@ -41,6 +43,7 @@ logger.setLevel(logging.INFO)
 CLDR_MGR_PRINCIPAL_PW = 'cldadmin'
 CLDR_MGR_PRINCIPAL_USER = 'cloudera-scm/admin'
 DEFAULT_CLOUDERA_NAMESPACE = Constants.DEFAULT.cloudera_namespace # pylint: disable=no-member
+DEFAULT_SDC_BUILD_URL = 'https://archives.streamsets.com/datacollector/{version}/csd/STREAMSETS-{version}.jar'
 KDC_ACL_FILENAME = '/var/kerberos/krb5kdc/kadm5.acl'
 KDC_CONF_FILENAME = '/var/kerberos/krb5kdc/kdc.conf'
 KDC_HOST_NAME = 'kdc'
@@ -128,6 +131,15 @@ def start(args):
     if args.java:
         set_cm_server_java_home(primary_node, '/usr/java/{0}'.format(args.java))
 
+    sdc_csd_url = None
+    if args.sdc_build_url:
+        sdc_csd_url = args.sdc_build_url
+    elif args.install_sdc_version:
+        sdc_csd_url = DEFAULT_SDC_BUILD_URL.format(version=args.install_sdc_version)
+
+    if sdc_csd_url is not None:
+        install_csd(primary_node, sdc_csd_url)
+
     '''
     A hack is needed here. In short, Docker mounts a number of files from the host into
     the container (and so do we). As such, when CM runs 'mount' inside of the containers
@@ -186,6 +198,13 @@ def start(args):
     deployment.update_cm_server_configs()
     deployment.update_database_configs()
     deployment.update_hive_metastore_namenodes()
+
+    if sdc_csd_url is not None:
+        download_distribute_activate_sdc_parcel(deployment, sdc_csd_url)
+        sdc =  deployment.cluster.create_service('streamsets', 'STREAMSETS')
+        role_type = sdc.get_role_types()[0]
+        role_name = '{}{}{}'.format('streamsets', role_type, random.randint(1000000000,9999999999))
+        sdc.create_role(role_name, role_type, deployment.api.get_host(primary_node.fqdn).hostId)
 
     if args.include_service_types:
         # CM maintains service types in CAPS, so make sure our args.include_service_types list
@@ -426,3 +445,68 @@ def install_kerberos_libs(cluster):
             node_group.ssh('yum -y -q install openldap-clients krb5-libs krb5-workstation')
         elif node_group.name == 'secondary':
             node_group.ssh('yum -y -q install krb5-libs krb5-workstation')
+
+def install_csd(primary_node, sdc_csd_url):
+    logger.info('Installing SDC csd with URL=%s...', sdc_csd_url)
+    jar_name = sdc_csd_url.rsplit('/')[-1]
+    csd_commands = ['wget -O /opt/cloudera/csd/{} {}'.format(jar_name, sdc_csd_url),
+                    'chown cloudera-scm:cloudera-scm /opt/cloudera/csd/STREAMSETS*.jar',
+                    'chmod 644 /opt/cloudera/csd/STREAMSETS*.jar'
+                   ]
+    primary_node.ssh('; '.join(csd_commands))
+
+def add_parcel_repo(deployment, sdc_csd_url):
+    parcel_repo = '{}parcel/'.format(sdc_csd_url.split('csd')[0])
+    logger.info('Adding parcel repo=%s...', parcel_repo)
+    cm_config = deployment.cm.get_config(view='full')
+    repo_config = cm_config['REMOTE_PARCEL_REPO_URLS']
+    value = repo_config.value or repo_config.default
+    # value is a comma-separated list
+    value += ',' + parcel_repo
+    deployment.cm.update_config({'REMOTE_PARCEL_REPO_URLS': value})
+    # wait to make sure parcels are refreshed
+    sleep(10)
+
+def download_distribute_activate_sdc_parcel(deployment, sdc_csd_url):
+    install_sdc_version = sdc_csd_url.rsplit('/')[-1].rsplit('.jar')[0].split('STREAMSETS-')[-1]
+    add_parcel_repo(deployment, sdc_csd_url)
+    sdc_parcel = deployment.cluster.get_parcel('STREAMSETS_DATACOLLECTOR', install_sdc_version)
+
+    logger.info('Starting SDC parcel download. This might take a while...')
+    sdc_parcel.start_download()
+    # make sure the download finishes
+    while True:
+        sdc_parcel = deployment.cluster.get_parcel(sdc_parcel.product, sdc_parcel.version)
+        if sdc_parcel.stage == 'DOWNLOADED':
+            break
+        if sdc_parcel.state.errors:
+            raise Exception('Failed to download SDC Parcel.')
+        logger.info('Downloading %s: %s / %s', sdc_parcel.product,
+                                               sdc_parcel.state.progress,
+                                               sdc_parcel.state.totalProgress)
+        sleep(15)
+    logger.info('%s %s downloaded...', sdc_parcel.product, sdc_parcel.version)
+
+    logger.info('Starting SDC parcel distribution. This might take a while...')
+    sdc_parcel.start_distribution()
+    # make sure the distribution finishes
+    while True:
+        sdc_parcel = deployment.cluster.get_parcel(sdc_parcel.product, sdc_parcel.version)
+        if sdc_parcel.stage == 'DISTRIBUTED':
+            break
+        if sdc_parcel.state.errors:
+            raise Exception('Failed to distribute SDC Parcel.')
+        logger.info('Distributing %s: %s / %s', sdc_parcel.product,
+                                                sdc_parcel.state.progress,
+                                                sdc_parcel.state.totalProgress)
+        sleep(15)
+    logger.info('%s %s distributed...', sdc_parcel.product, sdc_parcel.version)
+
+    logger.info('Starting SDC parcel activation...')
+    cmd = sdc_parcel.activate()
+    if cmd.success != True:
+        raise Exception('Failed to activate SDC parcel.')
+    # make sure the activation finishes
+    while sdc_parcel.stage != "ACTIVATED":
+        sdc_parcel = deployment.cluster.get_parcel(sdc_parcel.product, sdc_parcel.version)
+    logger.info('%s %s activated...', sdc_parcel.product, sdc_parcel.version)
