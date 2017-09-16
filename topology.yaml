@@ -51,3 +51,9 @@ start args:
     --java:
         help: If specified, a Java version to use in place of the default value present on the cluster
         metavar: ver
+    --kafka-version:
+        help: If specified, the version of Kafka to install from archive.cloudera.com
+        metavar: ver
+    --kudu-version:
+        help: If specified, the version of Kudu to install from archive.cloudera.com
+        metavar: ver

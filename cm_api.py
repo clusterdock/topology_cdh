@@ -86,6 +86,119 @@ class ApiClient:
         return self._get(endpoint='{}/clusters/{}/parcels/usage'.format(self.api_version,
                                                                         cluster_name)).json()
 
+    def refresh_parcel_repos(self):
+        """Refresh parcel information.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/cm/commands/'
+                                    'refreshParcelRepos').format(self.api_version)).json()
+
+    def activate_cluster_parcel(self, cluster_name, product, version):
+        """Activate a parcel on the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            product (:obj:`str`): The product to deactivate.
+            version (:obj:`str`): The version to deactivate.
+
+        Returns:
+             A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/parcels/products/{}/'
+                                    'versions/{}/commands/activate').format(self.api_version,
+                                                                            cluster_name,
+                                                                            product,
+                                                                            version)).json()
+
+    def deactivate_cluster_parcel(self, cluster_name, product, version):
+        """Deactivate a parcel on the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            product (:obj:`str`): The product to deactivate.
+            version (:obj:`str`): The version to deactivate.
+
+        Returns:
+             A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/parcels/products/{}/'
+                                    'versions/{}/commands/deactivate').format(self.api_version,
+                                                                              cluster_name,
+                                                                              product,
+                                                                              version)).json()
+
+    def distribute_cluster_parcel(self, cluster_name, product, version):
+        """Distribute parcel on the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            product (:obj:`str`): The product to deactivate.
+            version (:obj:`str`): The version to deactivate.
+
+        Returns:
+             A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/parcels/products/{}/'
+                                    'versions/{}/commands/'
+                                    'startDistribution').format(self.api_version,
+                                                                cluster_name,
+                                                                product,
+                                                                version)).json()
+
+    def download_cluster_parcel(self, cluster_name, product, version):
+        """Download parcel on the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            product (:obj:`str`): The product to deactivate.
+            version (:obj:`str`): The version to deactivate.
+
+        Returns:
+             A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/parcels/products/{}/'
+                                    'versions/{}/commands/startDownload').format(self.api_version,
+                                                                                 cluster_name,
+                                                                                 product,
+                                                                                 version)).json()
+
+    def remove_distributed_cluster_parcel(self, cluster_name, product, version):
+        """Remove distributed parcel on the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            product (:obj:`str`): The product to deactivate.
+            version (:obj:`str`): The version to deactivate.
+
+        Returns:
+             A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/parcels/products/{}/'
+                                    'versions/{}/commands/'
+                                    'startRemovalOfDistribution').format(self.api_version,
+                                                                         cluster_name,
+                                                                         product,
+                                                                         version)).json()
+
+    def remove_downloaded_cluster_parcel(self, cluster_name, product, version):
+        """Remove downloaded parcel on the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            product (:obj:`str`): The product to deactivate.
+            version (:obj:`str`): The version to deactivate.
+
+        Returns:
+             A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/parcels/products/{}/'
+                                    'versions/{}/commands/removeDownload').format(self.api_version,
+                                                                                  cluster_name,
+                                                                                  product,
+                                                                                  version)).json()
+
     def get_host(self, host_id):
         """Get information about a specific host in the deployment.
 
@@ -123,6 +236,20 @@ class ApiClient:
         return self._post(endpoint='{}/clusters/{}/hosts'.format(self.api_version,
                                                                  cluster_name),
                           data=host_ref_list).json()
+
+    def create_cluster_services(self, cluster_name, service_list):
+        """Create a list of services.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_list (:obj:`dict`)
+
+        Returns:
+            A dictionary (service list) of the created services.
+        """
+        return self._post(endpoint='{}/clusters/{}/services'.format(self.api_version,
+                                                                    cluster_name),
+                          data=service_list).json()
 
     def get_cluster_services(self, cluster_name, view='summary'):
         """Get a list of all services in the cluster.
@@ -181,6 +308,27 @@ class ApiClient:
                                    'roleConfigGroups').format(self.api_version,
                                                               cluster_name,
                                                               service_name)).json()
+
+    def get_service_role_config_group_config(self, cluster_name, service_name,
+                                             role_config_group_name, view='summary'):
+        """Get the service role config group configuration.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the service.
+            role_config_group_name (:obj:`str`): The name of the role config group.
+            view (:obj:`str`, optional): The collection view. Could be ``summary`` or ``full``.
+                Default: ``summary``
+
+        Returns:
+            A dictionary (config list) of the current service role config group configuration.
+        """
+        return self._get(endpoint=('{}/clusters/{}/services/{}/'
+                                   'roleConfigGroups/{}/config').format(self.api_version,
+                                                                        cluster_name,
+                                                                        service_name,
+                                                                        role_config_group_name),
+                         params={'view': view}).json()
 
     def update_service_role_config_group_config(self, cluster_name, service_name,
                                                 role_config_group_name, config_list):
@@ -244,6 +392,19 @@ class ApiClient:
                                     'hiveUpdateMetastoreNamenodes').format(self.api_version,
                                                                            cluster_name,
                                                                            service_name)).json()
+
+    def get_cm_config(self, view='summary'):
+        """Get CM configuration values.
+
+        Args:
+            view (:obj:`str`, optional): The collection view. Could be ``summary`` or ``full``.
+                Default: ``summary``
+
+        Returns:
+            A dictionary (config list) of updated config values.
+        """
+        return self._get(endpoint='{}/cm/config'.format(self.api_version),
+                         params=dict(view=view)).json()
 
     def update_cm_config(self, config_list):
         """Update CM configuration values.

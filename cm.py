@@ -10,7 +10,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
+from time import sleep
+
 from topology_cdh import cm_api
+
+logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
 
 class ClouderaManagerDeployment:
@@ -68,6 +73,19 @@ class ClouderaManagerDeployment:
         """
         return self.api_client.get_cluster_parcel_usage(cluster_name=cluster_name)
 
+    def refresh_parcel_repos(self):
+        """Refresh parcel information.
+
+        For CM API versions without support for the REST endpoint, this will simply sleep.
+        """
+        if self.api_client.api_version < 'v16':
+            logger.warning('Detected API version without support '
+                           'for refreshParcelRepos (%s). Sleeping instead ...',
+                           self.api_client.api_version)
+            sleep(30)
+        else:
+            self.api_client.refresh_parcel_repos()
+
     def get_host(self, host_id):
         """Get information about a specific host in the deployment.
 
@@ -106,6 +124,20 @@ class ClouderaManagerDeployment:
         return [host['hostId']
                 for host in self.api_client.add_cluster_hosts(cluster_name=cluster_name,
                                                               host_ref_list=host_ref_list)['items']]
+
+    def create_cluster_services(self, cluster_name, services):
+        """Create a list of services.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            services (:obj:`list`): A list of API service dictionaries to create.
+
+        Returns:
+            A list of the created services.
+        """
+        service_list = {'items': services}
+        return self.api_client.create_cluster_services(cluster_name=cluster_name,
+                                                       service_list=service_list)['items']
 
     def get_cluster_services(self, cluster_name, view='summary'):
         """Get a list of all services in the cluster.
@@ -182,6 +214,27 @@ class ClouderaManagerDeployment:
             role_config_group_name=role_config_group_name, config_list=config_list
         )['items']
 
+    def get_service_role_config_group_config(self, cluster_name, service_name,
+                                             role_config_group_name, view='summary'):
+        """Get the service role config group configuration.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the service.
+            role_config_group_name (:obj:`str`): The name of the role config group.
+            view (:obj:`str`, optional): The collection view. Could be ``summary`` or ``full``.
+                Default: ``summary``
+
+        Returns:
+            A dictionary of the current service role config group configuration.
+        """
+        return {config['name']: config.get('value') or config.get('default')
+                for config in self.api_client.get_service_role_config_group_config(
+                    cluster_name=cluster_name, service_name=service_name,
+                    role_config_group_name=role_config_group_name,
+                    view=view
+                )['items']}
+
     def update_service_config(self, cluster_name, service_name, configs):
         """Update the service configuration values.
 
@@ -219,6 +272,18 @@ class ClouderaManagerDeployment:
     def update_hive_metastore_namenodes(self, cluster_name, service_name):
         return self.api_client.update_hive_metastore_namenodes(cluster_name=cluster_name,
                                                                service_name=service_name)
+
+    def get_cm_config(self, view='summary'):
+        """Update CM configuration values.
+
+        Args:
+            view (:obj:`str`, optional): The collection view. Could be ``summary`` or ``full``.
+                Default: ``summary``
+
+        Returns:
+            A dictionary of config values.
+        """
+        return self.api_client.get_cm_config(view=view)['items']
 
     def update_cm_config(self, configs):
         """Update CM configuration values.
