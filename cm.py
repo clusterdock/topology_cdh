@@ -84,7 +84,7 @@ class ClouderaManagerDeployment:
                            self.api_client.api_version)
             sleep(30)
         else:
-            self.api_client.refresh_parcel_repos()
+            return self.api_client.refresh_parcel_repos()
 
     def get_host(self, host_id):
         """Get information about a specific host in the deployment.
