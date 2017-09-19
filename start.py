@@ -714,8 +714,11 @@ def _remove_files(nodes, files):
 
 
 def _restart_cm_agents(cluster):
-    command = 'service cloudera-scm-agent restart'
-    cluster.execute(command=command, quiet=True)
+    # Supervisor issues were seen when restarting the SCM agent;
+    # doing a clean_restart and disabling quiet mode for the execution
+    # were empirically determined to be necessary.
+    command = 'service cloudera-scm-agent clean_restart_confirmed'
+    cluster.execute(command=command, quiet=False)
 
 
 def _wait_for_cm_server(primary_node):
