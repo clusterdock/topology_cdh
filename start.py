@@ -11,9 +11,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import logging
 import re
 import socket
+
+from configobj import ConfigObj
 
 from clusterdock.models import Cluster, client, Node
 from clusterdock.utils import nested_get, wait_for_condition
@@ -675,33 +678,36 @@ def _set_cm_server_java_home(node, java_home):
 
 
 def _configure_cm_agents(cluster):
-    cm_agent_config = cluster.primary_node.get_file(CM_AGENT_CONFIG_FILE_PATH)
     for node in cluster:
         logger.info('Changing CM agent configs on %s ...', node.fqdn)
 
-        node_ip_address = nested_get(node.container.attrs,
-                                     ['NetworkSettings',
-                                      'Networks',
-                                      cluster.network,
-                                      'IPAddress'])
+        cm_agent_config = io.StringIO(cluster.primary_node.get_file(CM_AGENT_CONFIG_FILE_PATH))
+        config = ConfigObj(cm_agent_config, list_item_delimiter=',')
+
         logger.debug('Changing server_host to %s ...', cluster.primary_node.fqdn)
+        config['General']['server_host'] = cluster.primary_node.fqdn
+
+        node_ip_address = nested_get(node.container.attrs,
+                                     ['NetworkSettings', 'Networks', cluster.network, 'IPAddress'])
 
         # During container start, a race condition can occur where the hostname passed in
         # to Docker gets overriden by a start script in /etc/rc.sysinit. To avoid this,
         # we manually set the hostnames and IP addresses that CM agents use.
         logger.debug('Changing listening IP to %s ...', node_ip_address)
+        config['General']['listening_ip'] = node_ip_address
+
         logger.debug('Changing listening hostname to %s ...', node.fqdn)
+        config['General']['listening_hostname'] = node.fqdn
+
         logger.debug('Changing reported hostname to %s ...', node.fqdn)
-        node.put_file(CM_AGENT_CONFIG_FILE_PATH,
-                      re.sub(r'.*(reported_hostname).*',
-                             r'\1={}'.format(node.fqdn),
-                             re.sub(r'.*(listening_hostname).*',
-                                    r'\1={}'.format(node.fqdn),
-                                    re.sub(r'.*(listening_ip).*',
-                                           r'\1={}'.format(node_ip_address),
-                                           re.sub(r'(server_host)=.*',
-                                                  r'\1={}'.format(cluster.primary_node.fqdn),
-                                                  cm_agent_config)))))
+        config['General']['reported_hostname'] = node.fqdn
+
+        for filesystem in ['aufs', 'overlay']:
+            if filesystem not in config['General']['local_filesystem_whitelist']:
+                config['General']['local_filesystem_whitelist'].append(filesystem)
+
+        # ConfigObj.write returns a list of strings.
+        node.put_file(CM_AGENT_CONFIG_FILE_PATH, '\n'.join(config.write()))
 
 
 def _remove_files(nodes, files):
