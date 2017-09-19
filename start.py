@@ -23,6 +23,8 @@ from clusterdock.utils import nested_get, wait_for_condition
 
 from .cm import ClouderaManagerDeployment
 
+DEFAULT_NAMESPACE = 'cloudera'
+
 CM_PORT = 7180
 CM_AGENT_CONFIG_FILE_PATH = '/etc/cloudera-scm-agent/config.ini'
 CM_SERVER_ETC_DEFAULT = '/etc/default/cloudera-scm-server'
