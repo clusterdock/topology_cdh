@@ -43,7 +43,7 @@ logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
 def main(args):
     image_prefix = '{}/{}/clusterdock:cdh{}_cm{}'.format(args.registry,
-                                                         args.namespace,
+                                                         args.namespace or DEFAULT_NAMESPACE,
                                                          args.cdh_version,
                                                          args.cm_version)
     primary_node_image = '{}_{}'.format(image_prefix, 'primary-node')
@@ -689,14 +689,11 @@ def _configure_cm_agents(cluster):
         logger.debug('Changing server_host to %s ...', cluster.primary_node.fqdn)
         config['General']['server_host'] = cluster.primary_node.fqdn
 
-        node_ip_address = nested_get(node.container.attrs,
-                                     ['NetworkSettings', 'Networks', cluster.network, 'IPAddress'])
-
         # During container start, a race condition can occur where the hostname passed in
         # to Docker gets overriden by a start script in /etc/rc.sysinit. To avoid this,
         # we manually set the hostnames and IP addresses that CM agents use.
-        logger.debug('Changing listening IP to %s ...', node_ip_address)
-        config['General']['listening_ip'] = node_ip_address
+        logger.debug('Changing listening IP to %s ...', node.ip_address)
+        config['General']['listening_ip'] = node.ip_address
 
         logger.debug('Changing listening hostname to %s ...', node.fqdn)
         config['General']['listening_hostname'] = node.fqdn
