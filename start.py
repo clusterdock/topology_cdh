@@ -65,7 +65,7 @@ def main(args):
                                                        args.namespace,
                                                        args.java)
         for node in [primary_node] + secondary_nodes:
-            node.volumes_from = [java_image]
+            node.volumes = [java_image]
 
     cluster = Cluster(primary_node, *secondary_nodes)
     cluster.primary_node = primary_node
