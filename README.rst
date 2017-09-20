@@ -18,19 +18,20 @@ with the ``clusterdock`` script:
 .. code-block:: console
 
     $ git clone https://github.com/clusterdock/topology_cdh.git
-    $ clusterdock topology_cdh start
+    $ clusterdock start topology_cdh
 
 To see full usage instructions for the ``start`` action, use ``-h``/``--help``:
 
 .. code-block:: console
 
     $ clusterdock topology_cdh start -h
-    usage: clusterdock start [-h] [--cdh-version ver] [--cm-version ver]
-                             [--dont-start-cluster]
+    usage: clusterdock start [--always-pull] [--namespace ns] [--network nw]
+                             [-o sys] [-r url] [-h] [--cdh-version ver]
+                             [--cm-version ver] [--dont-start-cluster]
                              [--exclude-services svc1,svc2,...]
                              [--include-services svc1,svc2,...] [--java ver]
-                             [--always-pull] [--namespace ns] [--network nw]
-                             [-o sys] [-r url] [--primary-node node [node ...]]
+                             [--kafka-version ver] [--kudu-version ver]
+                             [--primary-node node [node ...]]
                              [--secondary-nodes node [node ...]]
                              topology
 
@@ -40,11 +41,10 @@ To see full usage instructions for the ``start`` action, use ``-h``/``--help``:
       topology              A clusterdock topology directory
 
     optional arguments:
-      -h, --help            show this help message and exit
       --always-pull         Pull latest images, even if they're available locally
                             (default: False)
       --namespace ns        Namespace to use when looking for images (default:
-                            clusterdock)
+                            None)
       --network nw          Docker network to use (default: cluster)
       -o sys, --operating-system sys
                             Operating system to use for cluster nodes (default:
@@ -52,20 +52,25 @@ To see full usage instructions for the ``start`` action, use ``-h``/``--help``:
       -r url, --registry url
                             Docker Registry from which to pull images (default:
                             docker.io)
+      -h, --help            show this help message and exit
 
     CDH arguments:
       --cdh-version ver     CDH version to use (default: 5.12.0)
       --cm-version ver      CM version to use (default: 5.12.0)
       --dont-start-cluster  Don't start clusters/services in Cloudera Manager
                             (default: False)
-      --exclude-services svc1,svc2,...
+      --exclude-services svc1,svc2,..., -x svc1,svc2,...
                             If specified, a comma-separated list of service types
                             to exclude from the CDH cluster (default: None)
-      --include-services svc1,svc2,...
+      --include-services svc1,svc2,..., -i svc1,svc2,...
                             If specified, a comma-separated list of service types
                             to include in the CDH cluster (default: None)
       --java ver            If specified, a Java version to use in place of the
                             default value present on the cluster (default: None)
+      --kafka-version ver   If specified, the version of Kafka to install from
+                            archive.cloudera.com (default: None)
+      --kudu-version ver    If specified, the version of Kudu to install from
+                            archive.cloudera.com (default: None)
 
     Node groups:
       --primary-node node [node ...]
