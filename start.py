@@ -197,6 +197,8 @@ def main(args):
                          service['name'])
             deployment.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
                                               service_name=service['name'])
+            logger.debug('Clearing /data/kudu/master on primary node ...')
+            cluster.primary_node.execute('rm -rf /data/kudu/master')
         elif service['type'] == 'KAFKA':
             logger.debug('Removing cluster service (name = %s) ...',
                          service['name'])
@@ -475,157 +477,158 @@ def _configure_kudu(deployment, cluster, kudu_version):
                 )
                 if not command['active'] and not command['success']:
                     raise Exception('Failed to remove downloaded Kudu parcel.')
+            break
+    for config in deployment.get_cm_config():
+        if config['name'] == 'REMOTE_PARCEL_REPO_URLS':
+            break
+    else:
+        raise Exception('Failed to find remote parcel repo URLs configuration.')
+    parcel_repo_urls = config['value']
 
-                for config in deployment.get_cm_config():
-                    if config['name'] == 'REMOTE_PARCEL_REPO_URLS':
-                        break
-                else:
-                    raise Exception('Failed to find remote parcel repo URLs configuration.')
-                parcel_repo_urls = config['value']
+    kudu_parcel_repo_url = '{}/{}'.format(KUDU_PARCEL_REPO_URL,
+                                          KUDU_PARCEL_VERSIONS[kudu_version])
+    logger.debug('Adding Kudu parcel repo URL (%s) ...', kudu_parcel_repo_url)
+    deployment.update_cm_config(
+        {'REMOTE_PARCEL_REPO_URLS': '{},{}'.format(parcel_repo_urls,
+                                                   kudu_parcel_repo_url)}
+    )
 
-                kudu_parcel_repo_url = '{}/{}'.format(KUDU_PARCEL_REPO_URL,
-                                                      KUDU_PARCEL_VERSIONS[kudu_version])
-                logger.debug('Adding Kudu parcel repo URL (%s) ...', kudu_parcel_repo_url)
-                deployment.update_cm_config(
-                    {'REMOTE_PARCEL_REPO_URLS': '{},{}'.format(parcel_repo_urls,
-                                                               kudu_parcel_repo_url)}
-                )
+    logger.debug('Refreshing parcel repos ...')
+    command = deployment.refresh_parcel_repos()
+    if command:
+        command_id = deployment.api_client.refresh_parcel_repos()['id']
 
-                logger.debug('Refreshing parcel repos ...')
-                command_id = deployment.api_client.refresh_parcel_repos()['id']
+        def condition(deployment, command_id):
+            command_information = deployment.api_client.get_command_information(command_id)
+            active = command_information.get('active')
+            success = command_information.get('success')
+            logger.debug('Refresh parcel repos command: (active: %s, success: %s)',
+                         active, success)
+            if not active and not success:
+                raise Exception('Failed to refresh parcel repos.')
+            return not active and success
 
-                def condition(deployment, command_id):
-                    command_information = deployment.api_client.get_command_information(command_id)
-                    active = command_information.get('active')
-                    success = command_information.get('success')
-                    logger.debug('Refresh parcel repos command: (active: %s, success: %s)',
-                                 active, success)
-                    if not active and not success:
-                        raise Exception('Failed to refresh parcel repos.')
-                    return not active and success
+        def success(time):
+            logger.debug('Refreshed parcel repos in %s seconds.', time)
 
-                def success(time):
-                    logger.debug('Refreshed parcel repos in %s seconds.', time)
+        def failure(timeout):
+            raise TimeoutError('Timed out after {} seconds waiting '
+                               'for parcel repos to refresh.'.format(timeout))
+        wait_for_condition(condition=condition, condition_args=[deployment, command_id],
+                           time_between_checks=3, timeout=180, success=success, failure=failure)
 
-                def failure(timeout):
-                    raise TimeoutError('Timed out after {} seconds waiting '
-                                       'for parcel repos to refresh.'.format(timeout))
-                wait_for_condition(condition=condition, condition_args=[deployment, command_id],
-                                   time_between_checks=3, timeout=180,
-                                   success=success, failure=failure)
+    parcels = deployment.get_cluster_parcels(cluster_name=DEFAULT_CLUSTER_NAME)
+    for parcel in parcels:
+        if (parcel['product'] == 'KUDU' and
+                parcel['version'].split('-')[0] == kudu_version):
+            parcel_version = parcel['version']
+            logger.debug('Found Kudu parcel with version %s.',
+                         parcel_version)
+            logger.info('Downloading Kudu parcel ...')
+            command = deployment.api_client.download_cluster_parcel(
+                DEFAULT_CLUSTER_NAME, 'KUDU', parcel_version
+            )
+            if not command['active'] and not command['success']:
+                raise Exception('Failed to download Kudu parcel.')
 
-                parcels = deployment.get_cluster_parcels(cluster_name=DEFAULT_CLUSTER_NAME)
+            def condition(deployment, cluster_name):
+                parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
                 for parcel in parcels:
                     if (parcel['product'] == 'KUDU' and
-                            parcel['version'].split('-')[0] == kudu_version):
-                        parcel_version = parcel['version']
-                        logger.debug('Found Kudu parcel with version %s.',
-                                     parcel_version)
-                        logger.info('Downloading Kudu parcel ...')
-                        command = deployment.api_client.download_cluster_parcel(
-                            DEFAULT_CLUSTER_NAME, 'KUDU', parcel_version
-                        )
-                        if not command['active'] and not command['success']:
-                            raise Exception('Failed to download Kudu parcel.')
-
-                        def condition(deployment, cluster_name):
-                            parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
-                            for parcel in parcels:
-                                if (parcel['product'] == 'KUDU' and
-                                        parcel['version'] == parcel_version):
-                                    break
-                            else:
-                                raise Exception('Could not find Kudu parcel '
-                                                'with version {}.'.format(parcel_version))
-
-                            logger.debug('Kudu parcel is in stage %s ...',
-                                         parcel['stage'])
-
-                            if parcel['stage'] == 'DOWNLOADED':
-                                return True
-
-                        def success(time):
-                            logger.debug('Kudu parcel became downloaded after %s seconds.', time)
-
-                        def failure(timeout):
-                            raise TimeoutError('Timed out after {} seconds waiting for Kudu parcel '
-                                               'to become downloaded.'.format(timeout))
-                        wait_for_condition(condition=condition,
-                                           condition_args=[deployment, DEFAULT_CLUSTER_NAME],
-                                           time_between_checks=3, timeout=300,
-                                           success=success, failure=failure)
-
-                        logger.info('Distributing Kudu parcel (%s) ...')
-                        command = deployment.api_client.distribute_cluster_parcel(
-                            DEFAULT_CLUSTER_NAME, 'KUDU', parcel_version
-                        )
-                        if not command['active'] and not command['success']:
-                            raise Exception('Failed to distribute Kudu parcel.')
-
-                        def condition(deployment, cluster_name):
-                            parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
-                            for parcel in parcels:
-                                if (parcel['product'] == 'KUDU' and
-                                        parcel['version'] == parcel_version):
-                                    break
-                            else:
-                                raise Exception('Could not find Kudu parcel '
-                                                'with version {}.'.format(parcel_version))
-
-                            logger.debug('Kudu parcel is in stage %s ...',
-                                         parcel['stage'])
-
-                            if parcel['stage'] == 'DISTRIBUTED':
-                                return True
-
-                        def success(time):
-                            logger.debug('Kudu parcel became distributed after %s seconds.', time)
-
-                        def failure(timeout):
-                            raise TimeoutError('Timed out after {} seconds waiting for Kudu parcel '
-                                               'to become distributed.'.format(timeout))
-                        wait_for_condition(condition=condition,
-                                           condition_args=[deployment, DEFAULT_CLUSTER_NAME],
-                                           time_between_checks=3, timeout=300,
-                                           success=success, failure=failure)
-
-                        logger.info('Activating Kudu parcel (%s) ...')
-                        command = deployment.api_client.activate_cluster_parcel(
-                            DEFAULT_CLUSTER_NAME, 'KUDU', parcel_version
-                        )
-                        if not command['active'] and not command['success']:
-                            raise Exception('Failed to activate Kudu parcel.')
-
-                        def condition(deployment, cluster_name):
-                            parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
-                            for parcel in parcels:
-                                if (parcel['product'] == 'KUDU' and
-                                        parcel['version'] == parcel_version):
-                                    break
-                            else:
-                                raise Exception('Could not find Kudu parcel '
-                                                'with version {}.'.format(parcel_version))
-
-                            logger.debug('Kudu parcel is in stage %s ...',
-                                         parcel['stage'])
-
-                            if parcel['stage'] == 'ACTIVATED':
-                                return True
-
-                        def success(time):
-                            logger.debug('Kudu parcel became activated after %s seconds.', time)
-
-                        def failure(timeout):
-                            raise TimeoutError('Timed out after {} seconds waiting for Kudu parcel '
-                                               'to become activated.'.format(timeout))
-                        wait_for_condition(condition=condition,
-                                           condition_args=[deployment, DEFAULT_CLUSTER_NAME],
-                                           time_between_checks=3, timeout=300,
-                                           success=success, failure=failure)
-
+                            parcel['version'] == parcel_version):
                         break
                 else:
-                    raise Exception('Could not find Kudu {} parcel ...'.format(kudu_version))
+                    raise Exception('Could not find Kudu parcel '
+                                    'with version {}.'.format(parcel_version))
+
+                logger.debug('Kudu parcel is in stage %s ...',
+                             parcel['stage'])
+
+                if parcel['stage'] == 'DOWNLOADED':
+                    return True
+
+            def success(time):
+                logger.debug('Kudu parcel became downloaded after %s seconds.', time)
+
+            def failure(timeout):
+                raise TimeoutError('Timed out after {} seconds waiting for Kudu parcel '
+                                   'to become downloaded.'.format(timeout))
+            wait_for_condition(condition=condition,
+                               condition_args=[deployment, DEFAULT_CLUSTER_NAME],
+                               time_between_checks=3, timeout=300,
+                               success=success, failure=failure)
+
+            logger.info('Distributing Kudu parcel (%s) ...')
+            command = deployment.api_client.distribute_cluster_parcel(
+                DEFAULT_CLUSTER_NAME, 'KUDU', parcel_version
+            )
+            if not command['active'] and not command['success']:
+                raise Exception('Failed to distribute Kudu parcel.')
+
+            def condition(deployment, cluster_name):
+                parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
+                for parcel in parcels:
+                    if (parcel['product'] == 'KUDU' and
+                            parcel['version'] == parcel_version):
+                        break
+                else:
+                    raise Exception('Could not find Kudu parcel '
+                                    'with version {}.'.format(parcel_version))
+
+                logger.debug('Kudu parcel is in stage %s ...',
+                             parcel['stage'])
+
+                if parcel['stage'] == 'DISTRIBUTED':
+                    return True
+
+            def success(time):
+                logger.debug('Kudu parcel became distributed after %s seconds.', time)
+
+            def failure(timeout):
+                raise TimeoutError('Timed out after {} seconds waiting for Kudu parcel '
+                                   'to become distributed.'.format(timeout))
+            wait_for_condition(condition=condition,
+                               condition_args=[deployment, DEFAULT_CLUSTER_NAME],
+                               time_between_checks=3, timeout=300,
+                               success=success, failure=failure)
+
+            logger.info('Activating Kudu parcel (%s) ...')
+            command = deployment.api_client.activate_cluster_parcel(
+                DEFAULT_CLUSTER_NAME, 'KUDU', parcel_version
+            )
+            if not command['active'] and not command['success']:
+                raise Exception('Failed to activate Kudu parcel.')
+
+            def condition(deployment, cluster_name):
+                parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
+                for parcel in parcels:
+                    if (parcel['product'] == 'KUDU' and
+                            parcel['version'] == parcel_version):
+                        break
+                else:
+                    raise Exception('Could not find Kudu parcel '
+                                    'with version {}.'.format(parcel_version))
+
+                logger.debug('Kudu parcel is in stage %s ...',
+                             parcel['stage'])
+
+                if parcel['stage'] == 'ACTIVATED':
+                    return True
+
+            def success(time):
+                logger.debug('Kudu parcel became activated after %s seconds.', time)
+
+            def failure(timeout):
+                raise TimeoutError('Timed out after {} seconds waiting for Kudu parcel '
+                                   'to become activated.'.format(timeout))
+            wait_for_condition(condition=condition,
+                               condition_args=[deployment, DEFAULT_CLUSTER_NAME],
+                               time_between_checks=3, timeout=300,
+                               success=success, failure=failure)
+
+            break
+    else:
+        raise Exception('Could not find Kudu {} parcel ...'.format(kudu_version))
     logger.info('Adding Kudu service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     master_role = {'type': 'KUDU_MASTER',
                    'hostRef': {'hostId': cluster.primary_node.host_id},
@@ -744,11 +747,14 @@ def _wait_for_cm_server(primary_node):
 
 
 def _wait_for_activated_cdh_parcel(deployment, cluster_name):
+    parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
+    parcel_version = next(parcel['version'] for parcel in parcels
+                          if parcel['product'] == 'CDH' and parcel['stage'] in ('ACTIVATING',
+                                                                                'ACTIVATED'))
     def condition(deployment, cluster_name):
         parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
         for parcel in parcels:
-            if parcel['product'] == 'CDH' and parcel['stage'] in ('ACTIVATING', 'ACTIVATED'):
-                parcel_version = parcel['version']
+            if parcel['product'] == 'CDH' and parcel['version'] == parcel_version:
                 logger.debug('Found CDH parcel with version %s in state %s.',
                              parcel_version,
                              parcel['stage'])
@@ -769,7 +775,7 @@ def _wait_for_activated_cdh_parcel(deployment, cluster_name):
         raise TimeoutError('Timed out after {} seconds waiting for '
                            'CDH parcel to become activated.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, cluster_name],
-                       time_between_checks=1, timeout=60, time_to_success=10,
+                       time_between_checks=1, timeout=120, time_to_success=10,
                        success=success, failure=failure)
 
 
