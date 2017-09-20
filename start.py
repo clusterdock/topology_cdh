@@ -1295,5 +1295,20 @@ def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_pr
         if 'HDFS' in cluster_service_types:
             dir_command = 'hadoop fs -mkdir /user/{0} && hadoop fs -chown {0}:{0} /user/{0}'
             dir_commands = [dir_command.format(primary) for primary in kerberos_principals.split(',')]
-            _execute_commands_against_kerberized_service(cluster, dir_commands, 'hdfs-NAMENODE',
-                                                         'hdfs', cluster.primary_node.fqdn)
+            _execute_commands_against_kerberized_hdfs(cluster, dir_commands, quiet)
+
+
+def _configure_for_streamsets(deployment, cluster):
+    SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
+    logger.info('Creating sample schemaless collection for Solr ...')
+    cluster.primary_node.execute('solrctl instancedir --generate '
+                                 '/root/sample_collection_solr_configs -schemaless', quiet=False)
+    solr_config = cluster.primary_node.get_file(SOLR_CONFIG_FILE_PATH)
+    cluster.primary_node.put_file(SOLR_CONFIG_FILE_PATH,
+                                  re.sub(r'<!--<(str name="df")>text<(/str)>-->',
+                                         r'<\1>id<\2>',
+                                         solr_config))
+    cluster.primary_node.execute('solrctl instancedir --create sample_collection '
+                                 '/root/sample_collection_solr_configs', quiet=False)
+    cluster.primary_node.execute('solrctl collection --create sample_collection '
+                                 '-s 1 -c sample_collection', quiet=False)
