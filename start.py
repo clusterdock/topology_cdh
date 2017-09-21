@@ -60,7 +60,9 @@ def main(args):
         'start_period': 30 * SECONDS
     }
     primary_node = Node(hostname=args.primary_node[0], group='primary',
-                        image=primary_node_image, ports=['7180'],
+                        image=primary_node_image, ports=[{CM_PORT: CM_PORT}
+                                                         if args.predictable
+                                                         else CM_PORT],
                         healthcheck=cm_server_healthcheck)
     secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image)
                        for hostname in args.secondary_nodes]
