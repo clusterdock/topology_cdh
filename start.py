@@ -26,6 +26,7 @@ from .cm import ClouderaManagerDeployment
 DEFAULT_NAMESPACE = 'cloudera'
 
 CM_PORT = 7180
+HUE_PORT = 8888
 CM_AGENT_CONFIG_FILE_PATH = '/etc/cloudera-scm-agent/config.ini'
 CM_SERVER_ETC_DEFAULT = '/etc/default/cloudera-scm-server'
 DEFAULT_CLUSTER_NAME = 'cluster'
@@ -62,7 +63,10 @@ def main(args):
     primary_node = Node(hostname=args.primary_node[0], group='primary',
                         image=primary_node_image, ports=[{CM_PORT: CM_PORT}
                                                          if args.predictable
-                                                         else CM_PORT],
+                                                         else CM_PORT,
+                                                         {HUE_PORT: HUE_PORT}
+                                                         if args.predictable
+                                                         else HUE_PORT],
                         healthcheck=cm_server_healthcheck)
     secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image)
                        for hostname in args.secondary_nodes]
