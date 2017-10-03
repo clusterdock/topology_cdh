@@ -369,6 +369,7 @@ def main(args):
         logger.info('Configure Cloudera Manager for Kerberos ...')
         _configure_cm_for_kerberos(deployment, cluster, args.kerberos_ticket_lifetime)
 
+    _configure_for_streamsets_before_start(deployment, cluster_name=DEFAULT_CLUSTER_NAME)
     logger.info('Deploying client config ...')
     cm_cluster.deploy_client_config()
 
@@ -394,6 +395,9 @@ def main(args):
                                cluster=cluster, quiet=not args.verbose,
                                kerberos_principals=args.kerberos_principals)
 
+        _configure_for_streamsets_after_start(deployment=deployment,
+                                              cluster_name=DEFAULT_CLUSTER_NAME,
+                                              cluster=cluster, quiet=not args.verbose)
 
 def _is_service_to_add(service_type, include_services, exclude_services):
     if include_services:
@@ -1298,17 +1302,41 @@ def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_pr
             _execute_commands_against_kerberized_hdfs(cluster, dir_commands, quiet)
 
 
-def _configure_for_streamsets(deployment, cluster):
-    SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
-    logger.info('Creating sample schemaless collection for Solr ...')
-    cluster.primary_node.execute('solrctl instancedir --generate '
-                                 '/root/sample_collection_solr_configs -schemaless', quiet=False)
-    solr_config = cluster.primary_node.get_file(SOLR_CONFIG_FILE_PATH)
-    cluster.primary_node.put_file(SOLR_CONFIG_FILE_PATH,
-                                  re.sub(r'<!--<(str name="df")>text<(/str)>-->',
-                                         r'<\1>id<\2>',
-                                         solr_config))
-    cluster.primary_node.execute('solrctl instancedir --create sample_collection '
-                                 '/root/sample_collection_solr_configs', quiet=False)
-    cluster.primary_node.execute('solrctl collection --create sample_collection '
-                                 '-s 1 -c sample_collection', quiet=False)
+def _configure_for_streamsets_before_start(deployment, cluster_name):
+    logger.info('Adding HDFS proxy user ...')
+    for service in deployment.get_cluster_services(cluster_name=cluster_name):
+        if service['type'] == 'HDFS':
+            configs = {'core_site_safety_valve': ('<property>'
+                                                  '<name>hadoop.proxyuser.sdc.hosts</name>'
+                                                  '<value>*</value>'
+                                                  '</property>'
+                                                  '<property>'
+                                                  '<name>hadoop.proxyuser.sdc.users</name>'
+                                                  '<value>*</value>'
+                                                  '</property>')}
+            deployment.update_service_config(cluster_name=cluster_name,
+                                             service_name=service['name'],
+                                             configs=configs)
+            break
+
+
+def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, quiet):
+    cluster_service_types = {service['type']
+                             for service
+                             in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME)}
+
+    if 'SOLR' in cluster_service_types:
+        SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
+
+        logger.info('Creating sample schemaless collection for Solr ...')
+        cluster.primary_node.execute('solrctl instancedir --generate '
+                                     '/root/sample_collection_solr_configs -schemaless', quiet=quiet)
+        solr_config = cluster.primary_node.get_file(SOLR_CONFIG_FILE_PATH)
+        cluster.primary_node.put_file(SOLR_CONFIG_FILE_PATH,
+                                      re.sub(r'<!--<(str name="df")>text<(/str)>-->',
+                                             r'<\1>id<\2>',
+                                             solr_config))
+        cluster.primary_node.execute('solrctl instancedir --create sample_collection '
+                                     '/root/sample_collection_solr_configs', quiet=quiet)
+        cluster.primary_node.execute('solrctl collection --create sample_collection '
+                                     '-s 1 -c sample_collection', quiet=quiet)
