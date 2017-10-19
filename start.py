@@ -170,16 +170,16 @@ def main(args):
             if service['type'] not in service_types_to_leave:
                 logger.info('Removing cluster service (name = %s) ...',
                             service['name'])
-                deployment.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
-                                                  service_name=service['name'])
+                deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
+                                                             service_name=service['name'])
     elif args.exclude_services:
         service_types_to_remove = args.exclude_services.upper().split(',')
         for service in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME):
             if service['type'] in service_types_to_remove:
                 logger.info('Removing cluster service (name = %s) ...',
                             service['name'])
-                deployment.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
-                                                  service_name=service['name'])
+                deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
+                                                             service_name=service['name'])
 
     cluster_service_types = {service['type']
                              for service
@@ -201,15 +201,15 @@ def main(args):
         if service['type'] == 'KUDU':
             logger.debug('Removing cluster service (name = %s) ...',
                          service['name'])
-            deployment.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
-                                              service_name=service['name'])
+            deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
+                                                         service_name=service['name'])
             logger.debug('Clearing /data/kudu/master on primary node ...')
             cluster.primary_node.execute('rm -rf /data/kudu/master')
         elif service['type'] == 'KAFKA':
             logger.debug('Removing cluster service (name = %s) ...',
                          service['name'])
-            deployment.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
-                                              service_name=service['name'])
+            deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
+                                                         service_name=service['name'])
 
     if args.kafka_version:
         logger.info('Configuring Kafka ...')
@@ -788,7 +788,7 @@ def _wait_for_activated_cdh_parcel(deployment, cluster_name):
 def _create_secondary_node_template(deployment, cluster_name, secondary_node):
     role_config_group_names = [
         nested_get(role, ['roleConfigGroupRef', 'roleConfigGroupName'])
-        for role_ref in deployment.get_host(host_id=secondary_node.host_id)['roleRefs']
+        for role_ref in deployment.api_client.get_host(host_id=secondary_node.host_id)['roleRefs']
         for role in deployment.get_service_roles(cluster_name=cluster_name,
                                                  service_name=role_ref['serviceName'])
         if role['name'] == role_ref['roleName']
@@ -828,8 +828,9 @@ def _update_database_configs(deployment, cluster_name, primary_node):
 def _update_hive_metastore_namenodes(deployment, cluster_name):
     for service in deployment.get_cluster_services(cluster_name=cluster_name):
         if service['type'] == 'HIVE':
-            command_id = deployment.update_hive_metastore_namenodes(cluster_name,
-                                                                    service['name'])['id']
+            command_id = deployment.api_client.update_hive_metastore_namenodes(
+                cluster_name, service['name']
+            )['id']
             break
 
     def condition(deployment, command_id):
@@ -852,7 +853,7 @@ def _update_hive_metastore_namenodes(deployment, cluster_name):
 
 
 def _deploy_client_config(deployment, cluster_name):
-    command_id = deployment.deploy_cluster_client_config(cluster_name=cluster_name)['id']
+    command_id = deployment.api_client.deploy_cluster_client_config(cluster_name=cluster_name)['id']
 
     def condition(deployment, command_id):
         command_information = deployment.api_client.get_command_information(command_id)
@@ -880,7 +881,7 @@ def _deploy_client_config(deployment, cluster_name):
 
 
 def _start_cluster(deployment, cluster_name):
-    command_id = deployment.start_all_cluster_services(cluster_name=cluster_name)['id']
+    command_id = deployment.api_client.start_all_cluster_services(cluster_name=cluster_name)['id']
 
     def condition(deployment, command_id):
         command_information = deployment.api_client.get_command_information(command_id)
@@ -902,7 +903,7 @@ def _start_cluster(deployment, cluster_name):
 
 
 def _start_cm_service(deployment):
-    command_id = deployment.start_cm_service()['id']
+    command_id = deployment.api_client.start_cm_service()['id']
 
     def condition(deployment, command_id):
         command_information = deployment.api_client.get_command_information(command_id)
@@ -926,7 +927,7 @@ def _start_cm_service(deployment):
 def _validate_service_health(deployment, cluster_name):
     def condition(deployment, cluster_name):
         services = (deployment.get_cluster_services(cluster_name=cluster_name)
-                    + [deployment.get_cm_service()])
+                    + [deployment.api_client.get_cm_service()])
         if all(service.get('serviceState') == 'NA' or
                service.get('serviceState') == 'STARTED' and service.get('healthSummary') == 'GOOD'
                for service in services):

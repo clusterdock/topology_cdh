@@ -62,17 +62,6 @@ class ClouderaManagerDeployment:
         return self.api_client.get_cluster_parcels(cluster_name=cluster_name,
                                                    view=view)['items']
 
-    def get_cluster_parcel_usage(self, cluster_name):
-        """Get detailed parcel usage for a cluster.
-
-        Args:
-            cluster_name (:obj:`str`): The name of the cluster.
-
-        Returns:
-            A dictionary (parcel usage) of the parcels in use on the cluster.
-        """
-        return self.api_client.get_cluster_parcel_usage(cluster_name=cluster_name)
-
     def refresh_parcel_repos(self):
         """Refresh parcel information.
 
@@ -85,17 +74,6 @@ class ClouderaManagerDeployment:
             sleep(30)
         else:
             return self.api_client.refresh_parcel_repos()
-
-    def get_host(self, host_id):
-        """Get information about a specific host in the deployment.
-
-        Args:
-            host_id (:obj:`str`): The host ID of the host.
-
-        Returns:
-            A dictionary of information about the host.
-        """
-        return self.api_client.get_host(host_id=host_id)
 
     def get_cluster_hosts(self, cluster_name):
         """Get information about the hosts associated with the cluster.
@@ -152,19 +130,6 @@ class ClouderaManagerDeployment:
         """
         return self.api_client.get_cluster_services(cluster_name=cluster_name,
                                                     view=view)['items']
-
-    def delete_cluster_service(self, cluster_name, service_name):
-        """Deletes a service from the cluster.
-
-        Args:
-            cluster_name (:obj:`str`): The name of the cluster.
-            service_name (:obj:`str`): The name of the service.
-
-        Returns:
-            The deleted service.
-        """
-        return self.api_client.delete_cluster_service(cluster_name=cluster_name,
-                                                      service_name=service_name)
 
     def get_service_roles(self, cluster_name, service_name):
         """Get a list of roles of a given service.
@@ -269,10 +234,6 @@ class ClouderaManagerDeployment:
         }
         return self.api_client.update_all_hosts_config(config_list=config_list)['items']
 
-    def update_hive_metastore_namenodes(self, cluster_name, service_name):
-        return self.api_client.update_hive_metastore_namenodes(cluster_name=cluster_name,
-                                                               service_name=service_name)
-
     def get_cm_config(self, view='summary'):
         """Update CM configuration values.
 
@@ -344,45 +305,3 @@ class ClouderaManagerDeployment:
                                                    host_template_name=host_template_name,
                                                    start_roles=start_roles,
                                                    host_ref_list=host_ref_list)
-
-    def deploy_cluster_client_config(self, cluster_name):
-        """Deploy the cluster-wide client configuration.
-
-        Args:
-            cluster_name (:obj:`str`): The name of the cluster.
-
-        Returns:
-            A command.
-        """
-        return self.api_client.deploy_cluster_client_config(cluster_name=cluster_name)
-
-    def start_all_cluster_services(self, cluster_name):
-        """Start all cluster services in the cluster.
-
-        Args:
-            cluster_name (:obj:`str`): The name of the cluster.
-
-        Returns:
-            A command.
-        """
-        return self.api_client.start_all_cluster_services(cluster_name=cluster_name)
-
-    def get_cm_service(self, view='summary'):
-        """Get Cloudera Manager Services service.
-
-        Args:
-            view (:obj:`str`, optional): The collection view. Could be ``summary`` or ``full``.
-                Default: ``summary``
-
-        Returns:
-            A service.
-        """
-        return self.api_client.get_cm_service(view=view)
-
-    def start_cm_service(self):
-        """Start the Cloudera Manager Services.
-
-        Returns:
-            A command.
-        """
-        return self.api_client.start_cm_service()
