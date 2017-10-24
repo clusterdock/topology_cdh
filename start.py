@@ -13,6 +13,7 @@
 
 import io
 import logging
+import os
 import re
 import socket
 
@@ -28,9 +29,20 @@ DEFAULT_NAMESPACE = 'cloudera'
 CM_PORT = 7180
 HUE_PORT = 8888
 CM_AGENT_CONFIG_FILE_PATH = '/etc/cloudera-scm-agent/config.ini'
+CM_PRINCIPAL_PASSWORD = 'cldadmin'
+CM_PRINCIPAL_USER = 'cloudera-scm/admin'
 CM_SERVER_ETC_DEFAULT = '/etc/default/cloudera-scm-server'
 DEFAULT_CLUSTER_NAME = 'cluster'
 SECONDARY_NODE_TEMPLATE_NAME = 'Secondary'
+
+KERBEROS_CONFIG_CONTAINER_DIR = '/etc/clusterdock/kerberos'
+KDC_HOSTNAME = 'kdc'
+KDC_IMAGE = 'clusterdock/topology_nodebase_kerberos:centos6.6'
+KDC_ACL_FILENAME = '/var/kerberos/krb5kdc/kadm5.acl'
+KDC_CONF_FILENAME = '/var/kerberos/krb5kdc/kdc.conf'
+KDC_KEYTAB_FILENAME = '{}/clusterdock.keytab'.format(KERBEROS_CONFIG_CONTAINER_DIR)
+KDC_KRB5_CONF_FILENAME = '/etc/krb5.conf'
+LINUX_USER_ID_START = 1000
 
 KUDU_PARCEL_VERSION_REGEX = r'(.*)-.*\.cdh(.*)\.p'
 KAFKA_PARCEL_REPO_URL = 'https://archive.cloudera.com/kafka/parcels'
@@ -70,17 +82,37 @@ def main(args):
                         healthcheck=cm_server_healthcheck)
     secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image)
                        for hostname in args.secondary_nodes]
+    nodes = [primary_node] + secondary_nodes
 
     if args.java:
         java_image = '{}/{}/clusterdock:cdh_{}'.format(args.registry,
                                                        args.namespace,
                                                        args.java)
-        for node in [primary_node] + secondary_nodes:
-            node.volumes = [java_image]
+        for node in nodes:
+            node.volumes.append(java_image)
 
-    cluster = Cluster(primary_node, *secondary_nodes)
+    if args.kerberos:
+        kerberos_config_host_dir = os.path.expanduser(args.kerberos_config_directory)
+        volumes = [{kerberos_config_host_dir: KERBEROS_CONFIG_CONTAINER_DIR}]
+        for node in nodes:
+            node.volumes = volumes + [{'/etc/localtime': '/etc/localtime'}]
+
+        kdc_node = Node(hostname=KDC_HOSTNAME, group='kdc', image=KDC_IMAGE,
+                        volumes=volumes)
+
+    cluster = Cluster(*nodes + ([kdc_node] if args.kerberos else []))
     cluster.primary_node = primary_node
     cluster.start(args.network)
+
+    # Keep track of whether to suppress DEBUG-level output in commands.
+    quiet = not args.verbose
+
+    if args.kerberos:
+        cluster.kdc_node = kdc_node
+        _configure_kdc(cluster, args.kerberos_principals, quiet=quiet)
+        _install_kerberos_clients(nodes, quiet=quiet)
+        if args.kerberos_principals:
+            _create_kerberos_cluster_users(nodes, args.kerberos_principals, quiet=quiet)
 
     if args.java:
         _set_cm_server_java_home(primary_node, '/usr/java/{}'.format(args.java))
@@ -90,9 +122,10 @@ def main(args):
                                              '/etc/resolv.conf',
                                              '/etc/hostname',
                                              '/etc/localtime']]
-    cluster.execute("bash -c '{}'".format('; '.join(filesystem_fix_commands)))
+    for node in nodes:
+        node.execute("bash -c '{}'".format('; '.join(filesystem_fix_commands)))
 
-    _configure_cm_agents(cluster)
+    _configure_cm_agents(nodes)
 
     # The CDH topology uses two pre-built images ('primary' and 'secondary'). If a cluster
     # larger than 2 nodes is started, some modifications need to be done to the nodes to
@@ -103,7 +136,7 @@ def main(args):
                              '/dfs*/dn/current/*'])
 
     logger.info('Restarting Cloudera Manager agents ...')
-    _restart_cm_agents(cluster)
+    _restart_cm_agents(nodes)
 
     logger.info('Waiting for Cloudera Manager server to come online ...')
     _wait_for_cm_server(primary_node)
@@ -123,7 +156,7 @@ def main(args):
     all_host_ids = {}
     for host in deployment.get_all_hosts():
         all_host_ids[host['hostId']] = host['hostname']
-        for node in cluster:
+        for node in nodes:
             if node.fqdn == host['hostname']:
                 node.host_id = host['hostId']
                 break
@@ -219,6 +252,10 @@ def main(args):
         logger.info('Configuring Kudu ...')
         _configure_kudu(deployment, cluster, kudu_version=args.kudu_version)
 
+    if args.kerberos:
+        logger.info('Configure Cloudera Manager for Kerberos ...')
+        _configure_cm_for_kerberos(deployment, cluster)
+
     logger.info('Deploying client config ...')
     _deploy_client_config(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
 
@@ -230,6 +267,158 @@ def main(args):
 
         logger.info('Validating service health ...')
         _validate_service_health(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
+
+
+def _configure_kdc(cluster, kerberos_principals, quiet):
+    kdc_node = cluster.kdc_node
+
+    logger.info('Updating KDC configurations ...')
+    realm = cluster.network.upper()
+
+    logger.debug('Updating krb5.conf ...')
+    krb5_conf = cluster.kdc_node.get_file(KDC_KRB5_CONF_FILENAME)
+    kdc_node.put_file(KDC_KRB5_CONF_FILENAME,
+                      re.sub(r'EXAMPLE.COM', realm,
+                             re.sub(r'example.com', cluster.network,
+                                    re.sub(r'kerberos.example.com',
+                                           kdc_node.fqdn,
+                                           krb5_conf))))
+
+    logger.debug('Updating kdc.conf ...')
+    kdc_conf = kdc_node.get_file(KDC_CONF_FILENAME)
+    kdc_node.put_file(KDC_CONF_FILENAME,
+                      re.sub(r'EXAMPLE.COM', realm,
+                             re.sub(r'\[kdcdefaults\]',
+                                    r'[kdcdefaults]\n max_renewablelife = 7d\n max_life = 1d',
+                                    kdc_conf)))
+
+    logger.debug('Updating kadm5.acl ...')
+    kadm5_acl = kdc_node.get_file(KDC_ACL_FILENAME)
+    kdc_node.put_file(KDC_ACL_FILENAME,
+                      re.sub(r'EXAMPLE.COM', realm, kadm5_acl))
+
+    logger.info('Starting KDC ...')
+
+    kdc_commands = [
+        'kdb5_util create -s -r {} -P kdcadmin'.format(realm),
+        'kadmin.local -q "addprinc -pw {} admin/admin@{}"'.format('acladmin', realm),
+        'kadmin.local -q "addprinc -pw {} {}@{}"'.format(CM_PRINCIPAL_PASSWORD,
+                                                         CM_PRINCIPAL_USER,
+                                                         realm)
+    ]
+    if kerberos_principals:
+        principals = ['{}@{}'.format(primary, realm)
+                      for primary in kerberos_principals.split(',')]
+        kdc_commands.extend(['kadmin.local -q "addprinc -randkey {}"'.format(principal)
+                             for principal in principals])
+        kdc_commands.append('kadmin.local -q '
+                            '"xst -norandkey -k {} {}"'.format(KDC_KEYTAB_FILENAME,
+                                                               ' '.join(principals)))
+    kdc_commands.extend(['krb5kdc',
+                         'kadmind',
+                         'authconfig --enablekrb5 --update',
+                         'cp -f {} {}'.format(KDC_KRB5_CONF_FILENAME,
+                                              KERBEROS_CONFIG_CONTAINER_DIR)])
+    if kerberos_principals:
+        kdc_commands.append('chmod 644 {}'.format(KDC_KEYTAB_FILENAME))
+
+    kdc_node.execute("bash -c '{}'".format('; '.join(kdc_commands)),
+                     quiet=quiet)
+
+    logger.info('Validating health of Kerberos services ...')
+
+    def condition(node, services, quiet):
+        services_with_poor_health = [service
+                                     for service in services
+                                     if node.execute(command='service {} status'.format(service),
+                                                     quiet=quiet).exit_code != 0]
+        if services_with_poor_health:
+            logger.debug('Services with poor health: %s',
+                         ', '.join(services_with_poor_health))
+        # Return True if the list of services with poor health is empty.
+        return not bool(services_with_poor_health)
+    wait_for_condition(condition=condition, condition_args=[kdc_node,
+                                                            ['krb5kdc', 'kadmin'],
+                                                            quiet])
+
+
+def _install_kerberos_clients(nodes, quiet):
+    logger.info('Installing Kerberos libraries on Cloudera Manager nodes ...')
+    for node in nodes:
+        command = ('yum -y -q install openldap-clients krb5-libs krb5-workstation'
+                   if node.group == 'primary'
+                   else 'yum -y -q install krb5-libs krb5-workstation')
+        node.execute(command=command, quiet=quiet)
+
+
+def _create_kerberos_cluster_users(nodes, kerberos_principals, quiet):
+    commands = ['useradd -u {} -g hadoop {}'.format(uid, primary)
+                for uid, primary in enumerate(kerberos_principals.split(','),
+                                              start=LINUX_USER_ID_START)]
+    for node in nodes:
+        node.execute('; '.join(commands), quiet=quiet)
+
+
+def _configure_cm_for_kerberos(deployment, cluster):
+    realm = cluster.network.upper()
+    kerberos_config = dict(SECURITY_REALM=realm,
+                           KDC_HOST=KDC_HOSTNAME,
+                           KRB_MANAGE_KRB5_CONF=True,
+                           KRB_ENC_TYPES='aes256-cts-hmac-sha1-96')
+    logger.debug('Updating CM server configurations ...')
+    deployment.update_cm_config(kerberos_config)
+
+    logger.debug('Importing Kerberos admin credentials ...')
+    command_id = deployment.api_client.import_admin_credentials('{}@{}'.format(CM_PRINCIPAL_USER,
+                                                                               realm),
+                                                                CM_PRINCIPAL_PASSWORD)['id']
+
+    def success(time):
+        logger.debug('Imported admin credentials in %s seconds.', time)
+
+    def failure(timeout):
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'to import admin credentials.'.format(timeout))
+    wait_for_condition(condition=_command_condition,
+                       condition_args=[deployment, command_id, 'Import admin credentials'],
+                       success=success, failure=failure)
+
+    logger.debug('Configuring cluster for Kerberos ...')
+    command_id = deployment.api_client.configure_cluster_for_kerberos(DEFAULT_CLUSTER_NAME)['id']
+
+    def success(time):
+        logger.debug('Configured cluster for Kerberos in %s seconds.', time)
+
+    def failure(timeout):
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'to configure cluster for Kerberos.'.format(timeout))
+    wait_for_condition(condition=_command_condition,
+                       condition_args=[deployment, command_id, 'Configure cluster for Kerberos'],
+                       success=success, failure=failure)
+
+    logger.debug('Deploying Kerberos client config ...')
+    command_id = deployment.deploy_cluster_kerberos_client_config(DEFAULT_CLUSTER_NAME)['id']
+
+    def success(time):
+        logger.debug('Deployed Kerberos client config in %s seconds.', time)
+
+    def failure(timeout):
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'to deploy Kerberos client config.'.format(timeout))
+    wait_for_condition(condition=_command_condition,
+                       condition_args=[deployment, command_id, 'Deploy Kerberos client config'],
+                       timeout=180,
+                       success=success, failure=failure)
+
+
+def _command_condition(deployment, command_id, command_description):
+    command_information = deployment.api_client.get_command_information(command_id)
+    active = command_information.get('active')
+    success = command_information.get('success')
+    logger.debug('%s command: (active: %s, success: %s)', command_description, active, success)
+    if not active and not success:
+        raise Exception('Failed to import admin credentials')
+    return not active and success
 
 
 # TODO: Get rid of the excess amount of code duplication between the following
@@ -688,15 +877,17 @@ def _set_cm_server_java_home(node, java_home):
     node.execute(command=command)
 
 
-def _configure_cm_agents(cluster):
-    for node in cluster:
+def _configure_cm_agents(nodes):
+    cm_server_host = next(node.fqdn for node in nodes if node.group == 'primary')
+
+    for node in nodes:
         logger.info('Changing CM agent configs on %s ...', node.fqdn)
 
-        cm_agent_config = io.StringIO(cluster.primary_node.get_file(CM_AGENT_CONFIG_FILE_PATH))
+        cm_agent_config = io.StringIO(node.get_file(CM_AGENT_CONFIG_FILE_PATH))
         config = ConfigObj(cm_agent_config, list_item_delimiter=',')
 
-        logger.debug('Changing server_host to %s ...', cluster.primary_node.fqdn)
-        config['General']['server_host'] = cluster.primary_node.fqdn
+        logger.debug('Changing server_host to %s ...', cm_server_host)
+        config['General']['server_host'] = cm_server_host
 
         # During container start, a race condition can occur where the hostname passed in
         # to Docker gets overriden by a start script in /etc/rc.sysinit. To avoid this,
@@ -727,12 +918,13 @@ def _remove_files(nodes, files):
         node.execute(command=command)
 
 
-def _restart_cm_agents(cluster):
+def _restart_cm_agents(nodes):
     # Supervisor issues were seen when restarting the SCM agent;
     # doing a clean_restart and disabling quiet mode for the execution
     # were empirically determined to be necessary.
     command = 'service cloudera-scm-agent clean_restart_confirmed'
-    cluster.execute(command=command, quiet=False)
+    for node in nodes:
+        node.execute(command=command, quiet=False)
 
 
 def _wait_for_cm_server(primary_node):
@@ -757,6 +949,7 @@ def _wait_for_activated_cdh_parcel(deployment, cluster_name):
     parcel_version = next(parcel['version'] for parcel in parcels
                           if parcel['product'] == 'CDH' and parcel['stage'] in ('ACTIVATING',
                                                                                 'ACTIVATED'))
+
     def condition(deployment, cluster_name):
         parcels = deployment.get_cluster_parcels(cluster_name=cluster_name)
         for parcel in parcels:

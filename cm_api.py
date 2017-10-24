@@ -366,6 +366,21 @@ class ApiClient:
                                                                              service_name),
                          data=service_config).json()
 
+    def deploy_cluster_kerberos_client_config(self, cluster_name, host_ref_list):
+        """Deploy cluster Kerberos client config.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            host_ref_list (:obj:`dict`)
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/commands/'
+                                    'deployClusterClientConfig').format(self.api_version,
+                                                                        cluster_name),
+                          data=host_ref_list).json()
+
     def update_all_hosts_config(self, config_list):
         """Update the default configuration values for all hosts.
 
@@ -418,6 +433,19 @@ class ApiClient:
         return self._put(endpoint='{}/cm/config'.format(self.api_version),
                          data=config_list).json()
 
+    def import_admin_credentials(self, username, password):
+        """Import KDC admin credentials that CM needs to create Kerberos principals.
+
+        Args:
+            username (:obj:`str`): CM principal username.
+            password (:obj:`str`): CM principal password.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint='{}/cm/commands/importAdminCredentials'.format(self.api_version),
+                          params=dict(username=username, password=password)).json()
+
     def create_host_templates(self, cluster_name, host_template_list):
         """Create new host templates.
 
@@ -463,6 +491,20 @@ class ApiClient:
         return self._post(endpoint=('{}/clusters/{}/commands/'
                                     'deployClientConfig').format(self.api_version,
                                                                  cluster_name)).json()
+
+    def configure_cluster_for_kerberos(self, cluster_name):
+        """Configure the cluster to use Kerberos.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/commands/'
+                                    'configureForKerberos').format(self.api_version,
+                                                                   cluster_name),
+                          data={}).json()
 
     def start_all_cluster_services(self, cluster_name):
         """Start all cluster services in the cluster.

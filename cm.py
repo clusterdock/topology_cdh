@@ -103,6 +103,22 @@ class ClouderaManagerDeployment:
                 for host in self.api_client.add_cluster_hosts(cluster_name=cluster_name,
                                                               host_ref_list=host_ref_list)['items']]
 
+    def deploy_cluster_kerberos_client_config(self, cluster_name, host_ids=None):
+        """Deploy cluster Kerberos client config.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            host_ids (:obj:`list`): A list of host IDs of hosts to which to deploy configs.
+                Default: ``None``
+
+        Returns:
+            A command.
+        """
+        host_ref_list = {
+            'items': [{'hostId': host_id} for host_id in (host_ids or [])]
+        }
+        return self.api_client.deploy_cluster_kerberos_client_config(cluster_name, host_ref_list)
+
     def create_cluster_services(self, cluster_name, services):
         """Create a list of services.
 
