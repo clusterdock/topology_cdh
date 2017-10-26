@@ -345,6 +345,10 @@ def _configure_kdc(cluster, kerberos_principals, quiet):
 def _install_kerberos_clients(nodes, quiet):
     logger.info('Installing Kerberos libraries on Cloudera Manager nodes ...')
     for node in nodes:
+        if node.execute('yum list installed yum-plugin-ovl', quiet=quiet).exit_code != 0:
+            logger.debug('Installing yum-plugin-ovl to workaround https://git.io/vFvPW ...')
+            node.execute('yum -y -q install yum-plugin-ovl', quiet=quiet)
+
         command = ('yum -y -q install openldap-clients krb5-libs krb5-workstation'
                    if node.group == 'primary'
                    else 'yum -y -q install krb5-libs krb5-workstation')
