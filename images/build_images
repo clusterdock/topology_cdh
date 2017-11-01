@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+# Copyright 2017 StreamSets Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import argparse
+import logging
+import subprocess
+from pathlib import Path
+
+logging.basicConfig(level=logging.WARNING)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+CSD_URL_TEMPLATE = 'http://archives.streamsets.com/datacollector/{0}/csd/STREAMSETS-{0}.jar'
+IMAGE_NAME_TEMPLATE = 'streamsets/clusterdock:topology_cdh-streamsets_datacollector-{}'
+PARCEL_DIRECTORY_TEMPLATE = '/opt/cloudera/parcels/STREAMSETS_DATACOLLECTOR-{}'
+PARCEL_URL_TEMPLATE = 'http://archives.streamsets.com/datacollector/{0}/parcel/STREAMSETS_DATACOLLECTOR-{0}-el6.parcel'
+
+def main():
+    parser = argparse.ArgumentParser(description=('Build Docker images with StreamSets '
+                                                  'Data Collector parcels for clusterdock'),
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('versions', metavar='ver', nargs='+')
+    parser.add_argument('-p', '--push', help='Push Docker images after building', action='store_true')
+    parser.add_argument('--dry-run', help="Don't actually do the `docker build`", action='store_true')
+    args = parser.parse_args()
+
+    image_folder = Path(Path(__file__).parent, 'sdc').resolve()
+
+    if args.dry_run:
+        logger.info('Doing dry-run of tool ...')
+
+    for sdc_version in args.versions:
+        image_name = IMAGE_NAME_TEMPLATE.format(sdc_version)
+        csd_url = CSD_URL_TEMPLATE.format(sdc_version)
+        parcel_directory = PARCEL_DIRECTORY_TEMPLATE.format(sdc_version)
+        parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version)
+
+        cmd_elements = ['docker build -t {}'.format(image_name),
+                        '--build-arg CSD_URL={}'.format(csd_url),
+                        '--build-arg PARCEL_DIRECTORY={}'.format(parcel_directory),
+                        '--build-arg PARCEL_URL={}'.format(parcel_url),
+                        str(image_folder)]
+        cmd = ' '.join(cmd_elements)
+        logger.debug('Running Docker build command (%s) ...', cmd)
+        if not args.dry_run:
+            subprocess.run(cmd, shell=True, check=True)
+
+        if args.push:
+            cmd = 'docker push {}'.format(image_name)
+            logger.debug('Running Dockerp ush command (%s) ...', cmd)
+            if not args.dry_run:
+                subprocess.run(cmd, shell=True, check=True)
+
+
+if __name__ == '__main__':
+    main()

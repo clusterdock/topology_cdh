@@ -20,6 +20,10 @@ from topology_cdh import cm_api
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
 
+class ParcelNotFoundError(Exception):
+    pass
+
+
 class ClouderaManagerParcel:
     def __init__(self,
                  cluster,
@@ -88,6 +92,13 @@ class ClouderaManagerParcel:
             for parcel in self.cluster.parcels:
                 if parcel.product == self.product and parcel.version == self.version:
                     break
+            else:
+                detected_parcels = ', '.join('{}-{}'.format(parcel.product, parcel.version)
+                                             for parcel in self.cluster.parcels)
+                raise ParcelNotFoundError('Could not find parcel (product = {}, version = {}). '
+                                          'Detected parcels: {}.'.format(self.product,
+                                                                         self.version,
+                                                                         detected_parcels))
             logger.debug('%s parcel is in stage %s ...', self.product, parcel.stage)
             return parcel.stage == stage
 

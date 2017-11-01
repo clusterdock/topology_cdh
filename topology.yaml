@@ -75,6 +75,8 @@ start args:
         help: If specified, attempt to expose container ports to the same port number on the host
     --spark2-version:
         help: If specified, the version of Spark2 to install from archive.cloudera.com
+    --sdc-version:
+        help: If specified, the version of StreamSets Data Collector to install
         metavar: ver
     --single-node:
         action: store_true
