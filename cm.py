@@ -13,9 +13,171 @@
 import logging
 from time import sleep
 
+from clusterdock.utils import wait_for_condition
+
 from topology_cdh import cm_api
 
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
+
+
+class ClouderaManagerParcel:
+    def __init__(self,
+                 cluster,
+                 product,
+                 version,
+                 stage):
+        self.cluster = cluster
+        self.product = product
+        self.version = version
+        self.stage = stage
+
+    def download(self, timeout=300):
+        logger.info('Downloading parcel (product = %s, version = %s) on cluster %s ...',
+                    self.product,
+                    self.version,
+                    self.cluster.name)
+        command = self.cluster.api_client.download_cluster_parcel(cluster_name=self.cluster.name,
+                                                                  product=self.product,
+                                                                  version=self.version)
+        if not command['active'] and not command['success']:
+            raise Exception('{} parcel failed to download.'.format(self.product))
+        self.wait_for_stage('DOWNLOADED')
+        return self
+
+    def distribute(self, timeout=300, time_to_success=0):
+        logger.info('Distributing parcel (product = %s, version = %s) on cluster %s ...',
+                    self.product,
+                    self.version,
+                    self.cluster.name)
+        command = self.cluster.api_client.distribute_cluster_parcel(cluster_name=self.cluster.name,
+                                                                    product=self.product,
+                                                                    version=self.version)
+        if not command['active'] and not command['success']:
+            raise Exception('{} parcel failed to distribute.'.format(self.product))
+        self.wait_for_stage('DISTRIBUTED')
+        return self
+
+    def activate(self, timeout=300, time_to_success=0):
+        logger.info('Activating parcel (product = %s, version = %s) on cluster %s ...',
+                    self.product,
+                    self.version,
+                    self.cluster.name)
+        command = self.cluster.api_client.activate_cluster_parcel(cluster_name=self.cluster.name,
+                                                                  product=self.product,
+                                                                  version=self.version)
+        if not command['active'] and not command['success']:
+            raise Exception('{} parcel failed to activate.'.format(self.product))
+        self.wait_for_stage('ACTIVATED')
+        return self
+
+    def deactivate(self, timeout=300, time_to_success=0):
+        logger.info('Deactivating parcel (product = %s, version = %s) on cluster %s ...',
+                    self.product,
+                    self.version,
+                    self.cluster.name)
+        command = self.cluster.api_client.deactivate_cluster_parcel(cluster_name=self.cluster.name,
+                                                                  product=self.product,
+                                                                  version=self.version)
+        if not command['active'] and not command['success']:
+            raise Exception('{} parcel failed to deactivate.'.format(self.product))
+        self.wait_for_stage('DISTRIBUTED')
+        return self
+
+    def wait_for_stage(self, stage, timeout=300, time_to_success=0):
+        def condition():
+            for parcel in self.cluster.parcels:
+                if parcel.product == self.product and parcel.version == self.version:
+                    break
+            logger.debug('%s parcel is in stage %s ...', self.product, parcel.stage)
+            return parcel.stage == stage
+
+        def success(time):
+            logger.debug('%s parcel reached stage %s after %s seconds.', self.product, stage, time)
+
+        def failure(timeout):
+            raise TimeoutError('Timed out after {} seconds waiting for {} parcel '
+                               'to reach stage {}.'.format(timeout, self.product, stage))
+
+        return wait_for_condition(condition=condition,
+                                  time_between_checks=3, timeout=timeout,
+                                  time_to_success=time_to_success,
+                                  success=success, failure=failure)
+
+
+class ClouderaManagerCluster:
+    def __init__(self,
+                 api_client,
+                 name):
+        self.api_client = api_client
+        self.name = name
+
+    @property
+    def parcels(self):
+        return [ClouderaManagerParcel(cluster=self,
+                                      product=parcel['product'],
+                                      version=parcel['version'],
+                                      stage=parcel['stage'])
+                for parcel
+                in self.api_client.get_cluster_parcels(cluster_name=self.name,
+                                                       view='full')['items']]
+
+    def parcel(self, product=None, version=None, stage=None):
+        if not product and not version and not stage:
+            raise Exception('A product and/or version and/or stage must '
+                            'be specified to select a parcel.')
+        return next(parcel
+                    for parcel in self.parcels
+                    if (not product or parcel.product == product)
+                    and (not version or parcel.version == version)
+                    and (not stage or parcel.stage == stage))
+
+    def deploy_client_config(self):
+        command_id = self.api_client.deploy_cluster_client_config(cluster_name=self.name)['id']
+
+        def condition(command_id):
+            command_information = self.api_client.get_command_information(command_id)
+            active = command_information.get('active')
+            success = command_information.get('success')
+            result_message = command_information.get('resultMessage')
+            logger.debug('Deploy cluster client config command: (active: %s, success: %s)',
+                         active, success)
+            if not active and not success:
+                if 'not currently available for execution' in result_message:
+                    logger.debug('Deploy cluster client config execution not '
+                                 'currently available. Continuing ...')
+                    return True
+                raise Exception('Failed to deploy cluster config.')
+            return not active and success
+
+        def success(time):
+            logger.debug('Deployed cluster client config in %s seconds.', time)
+
+        def failure(timeout):
+            raise TimeoutError('Timed out after {} seconds waiting '
+                               'for cluster client config to deploy.'.format(timeout))
+        wait_for_condition(condition=condition, condition_args=[command_id],
+                           time_between_checks=3, timeout=180, success=success, failure=failure)
+
+    def start(self):
+        command_id = self.api_client.start_all_cluster_services(cluster_name=self.name)['id']
+
+        def condition(command_id):
+            command_information = self.api_client.get_command_information(command_id)
+            active = command_information.get('active')
+            success = command_information.get('success')
+            logger.debug('Start cluster command: (active: %s, success: %s)', active, success)
+            if not active and not success:
+                raise Exception('Failed to start cluster.')
+            return not active and success
+
+        def success(time):
+            logger.debug('Started cluster in %s seconds.', time)
+
+        def failure(timeout):
+            raise TimeoutError('Timed out after {} seconds waiting '
+                               'for cluster to start.'.format(timeout))
+        wait_for_condition(condition=condition, condition_args=[command_id],
+                           time_between_checks=3, timeout=600, success=success, failure=failure)
 
 
 class ClouderaManagerDeployment:
@@ -35,6 +197,9 @@ class ClouderaManagerDeployment:
         self.api_client = cm_api.ApiClient(server_url=server_url,
                                            username=username,
                                            password=password)
+
+    def cluster(self, name):
+        return ClouderaManagerCluster(api_client=self.api_client, name=name)
 
     def get_all_hosts(self, view='summary'):
         """Get information about all the hosts in the deployment.
@@ -73,7 +238,27 @@ class ClouderaManagerDeployment:
                            self.api_client.api_version)
             sleep(30)
         else:
-            return self.api_client.refresh_parcel_repos()
+            command_id = self.api_client.refresh_parcel_repos()['id']
+
+            def condition(command_id):
+                command_information = self.api_client.get_command_information(command_id)
+                active = command_information.get('active')
+                success = command_information.get('success')
+                logger.debug('Refresh parcel repos command: (active: %s, success: %s)',
+                             active, success)
+                if not active and not success:
+                    raise Exception('Failed to refresh parcel repos.')
+                return not active and success
+
+            def success(time):
+                logger.debug('Refreshed parcel repos in %s seconds.', time)
+
+            def failure(timeout):
+                raise TimeoutError('Timed out after {} seconds waiting '
+                                   'for parcel repos to refresh.'.format(timeout))
+            wait_for_condition(condition=condition, condition_args=[command_id],
+                               time_between_checks=3, timeout=180, success=success,
+                               failure=failure)
 
     def get_cluster_hosts(self, cluster_name):
         """Get information about the hosts associated with the cluster.
