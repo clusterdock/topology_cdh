@@ -72,13 +72,11 @@ def main(args):
         'retries': 1,
         'start_period': 30 * SECONDS
     }
+    ports = [{CM_PORT: CM_PORT} if args.predictable else CM_PORT,
+             {HUE_PORT: HUE_PORT} if args.predictable else HUE_PORT]
+
     primary_node = Node(hostname=args.primary_node[0], group='primary',
-                        image=primary_node_image, ports=[{CM_PORT: CM_PORT}
-                                                         if args.predictable
-                                                         else CM_PORT,
-                                                         {HUE_PORT: HUE_PORT}
-                                                         if args.predictable
-                                                         else HUE_PORT],
+                        image=primary_node_image, ports=ports,
                         healthcheck=cm_server_healthcheck)
     secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image)
                        for hostname in args.secondary_nodes]
