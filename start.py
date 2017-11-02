@@ -93,7 +93,7 @@ def main(args):
         kerberos_config_host_dir = os.path.expanduser(args.kerberos_config_directory)
         volumes = [{kerberos_config_host_dir: KERBEROS_CONFIG_CONTAINER_DIR}]
         for node in nodes:
-            node.volumes = volumes + [{'/etc/localtime': '/etc/localtime'}]
+            node.volumes.extend(volumes)
 
         kdc_node = Node(hostname=KDC_HOSTNAME, group='kdc', image=KDC_IMAGE,
                         volumes=volumes)
@@ -329,7 +329,7 @@ def _configure_kdc(cluster, kerberos_principals, quiet):
     if kerberos_principals:
         kdc_commands.append('chmod 644 {}'.format(KDC_KEYTAB_FILENAME))
 
-    kdc_node.execute("bash -c '{}'".format('; '.join(kdc_commands)),
+    kdc_node.execute('; '.join(kdc_commands),
                      quiet=quiet)
 
     logger.info('Validating health of Kerberos services ...')
