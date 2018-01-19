@@ -164,6 +164,9 @@ def main(args):
                       if parcel.product == 'CDH' and parcel.stage in ('ACTIVATING',
                                                                       'ACTIVATED'))
 
+    # Wait on all slave nodes to get back to CM
+    wait_for_condition(lambda: len(deployment.get_all_hosts()) == len(nodes))
+
     # Add all CM hosts to the cluster (i.e. only new hosts that weren't part of the original
     # images).
     all_host_ids = {}
