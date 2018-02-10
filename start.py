@@ -440,6 +440,31 @@ def _configure_cm_for_kerberos(deployment, cluster):
                        timeout=180,
                        success=success, failure=failure)
 
+    for service in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME):
+        if service['type'] == 'HUE':
+            _apply_kerberos_fix_for_hue(cluster)
+            break
+
+
+def _apply_kerberos_fix_for_hue(cluster):
+    """ Fix for Hue service as explained at:
+    http://www.cloudera.com/documentation/manager/5-1-x/Configuring-Hadoop-Security-with-Cloudera-Manager/cm5chs_enable_hue_sec_s10.html
+    """
+    logger.info('Applying Kerberos fix for hue...')
+    kdc_node = cluster.kdc_node
+    primary_node = cluster.primary_node
+
+    realm = cluster.network.upper()
+    kdc_hue_commands = [
+        'kadmin.local -q "modprinc -maxrenewlife 90day krbtgt/{realm}"'.format(realm=realm),
+        'kadmin.local -q "modprinc -maxrenewlife 90day +allow_renewable hue/{hue_node_name}@{realm}"'.format(
+            realm=realm,
+            hue_node_name=primary_node.fqdn),
+        'service krb5kdc restart',
+        'service kadmin restart'
+    ]
+    kdc_node.execute('; '.join(kdc_hue_commands))
+
 
 def _command_condition(deployment, command_id, command_description):
     command_information = deployment.api_client.get_command_information(command_id)
