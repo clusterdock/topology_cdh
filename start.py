@@ -596,11 +596,14 @@ def _configure_kudu(deployment, cluster, kudu_version):
 
 
 def _set_cm_server_java_home(node, java_home):
-    command = 'echo "export JAVA_HOME={}" >> {}'.format(java_home, CM_SERVER_ETC_DEFAULT)
+    node.execute('sed -i "/JAVA_HOME/d" /etc/default/cloudera-scm-server')
+    commands = ['sed -i "/JAVA_HOME/d" {}'.format(CM_SERVER_ETC_DEFAULT),
+                'echo "export JAVA_HOME={}" >> {}'.format(java_home,
+                                                          CM_SERVER_ETC_DEFAULT)]
     logger.info('Setting JAVA_HOME to %s in %s ...',
                 java_home,
                 CM_SERVER_ETC_DEFAULT)
-    node.execute(command=command)
+    node.execute(command=' && '.join(commands))
 
 
 def _configure_cm_agents(nodes):
