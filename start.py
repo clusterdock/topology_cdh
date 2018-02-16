@@ -122,7 +122,13 @@ def main(args):
                          cm_server_status.output,
                          cm_server_status.exit_code)
             return cm_server_status.exit_code != 1
-        wait_for_condition(cm_server_not_dead, [primary_node])
+        try:
+            wait_for_condition(cm_server_not_dead,
+                               [primary_node],
+                               failure=lambda timeout: None)
+        except TimeoutError:
+            logger.warning('Timed out while waiting for the CM server to not be dead. '
+                           'Will try to continue ...')
 
         primary_node.execute('service cloudera-scm-server restart')
 
