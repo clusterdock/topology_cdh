@@ -17,23 +17,37 @@ import logging
 import subprocess
 from pathlib import Path
 
+import requests
+
 logging.basicConfig(level=logging.WARNING)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-CSD_URL_TEMPLATE = 'http://archives.streamsets.com/datacollector/{0}/csd/STREAMSETS-{0}.jar'
+DEFAULT_S3_BUCKET = 'nightly.streamsets.com'
+DEFAULT_BUILD = 'latest'
+CSD_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/csd/STREAMSETS-{0}.jar'
 IMAGE_NAME_TEMPLATE = 'streamsets/clusterdock:topology_cdh-streamsets_datacollector-{}'
-PARCEL_DIRECTORY_TEMPLATE = '/opt/cloudera/parcels/STREAMSETS_DATACOLLECTOR-{}'
-PARCEL_URL_TEMPLATE = 'http://archives.streamsets.com/datacollector/{0}/parcel/STREAMSETS_DATACOLLECTOR-{0}-el6.parcel'
+PARCEL_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/parcel/STREAMSETS_DATACOLLECTOR-{0}-el6.parcel'
+PARCEL_MANIFEST_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/parcel/manifest.json'
+
 
 def main():
     parser = argparse.ArgumentParser(description=('Build Docker images with StreamSets '
                                                   'Data Collector parcels for clusterdock'),
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('versions', metavar='ver', nargs='+')
-    parser.add_argument('-p', '--push', help='Push Docker images after building', action='store_true')
+    parser.add_argument('--build',
+                        help='The build to use from S3 (e.g. of the form "2038," "2.4," "latest")',
+                        default=DEFAULT_BUILD)
     parser.add_argument('--dry-run', help="Don't actually do the `docker build`", action='store_true')
+    parser.add_argument('--s3-bucket',
+                        help='S3 bucket to get parcels from',
+                        default=DEFAULT_S3_BUCKET)
+    parser.add_argument('--sdc-version-tag',
+                        help='A tag to use for images instead of the SDC version gleamed from '
+                             'stage-lib-manifest.properties',
+                        metavar='tag')
+    parser.add_argument('-p', '--push', help='Push Docker images after building', action='store_true')
     args = parser.parse_args()
 
     image_folder = Path(Path(__file__).parent, 'sdc').resolve()
@@ -41,27 +55,40 @@ def main():
     if args.dry_run:
         logger.info('Doing dry-run of tool ...')
 
-    for sdc_version in args.versions:
-        image_name = IMAGE_NAME_TEMPLATE.format(sdc_version)
-        csd_url = CSD_URL_TEMPLATE.format(sdc_version)
-        parcel_directory = PARCEL_DIRECTORY_TEMPLATE.format(sdc_version)
-        parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version)
+    sdc_version = _get_sdc_version(PARCEL_MANIFEST_URL_TEMPLATE.format(build=args.build, s3_bucket=args.s3_bucket))
+    image_name = IMAGE_NAME_TEMPLATE.format(args.sdc_version_tag or sdc_version)
+    csd_url = CSD_URL_TEMPLATE.format(sdc_version, build=args.build, s3_bucket=args.s3_bucket)
+    parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version, build=args.build, s3_bucket=args.s3_bucket)
 
-        cmd_elements = ['docker build -t {}'.format(image_name),
-                        '--build-arg CSD_URL={}'.format(csd_url),
-                        '--build-arg PARCEL_DIRECTORY={}'.format(parcel_directory),
-                        '--build-arg PARCEL_URL={}'.format(parcel_url),
-                        str(image_folder)]
-        cmd = ' '.join(cmd_elements)
-        logger.debug('Running Docker build command (%s) ...', cmd)
+    cmd_elements = ['docker build -t {}'.format(image_name),
+                    '--build-arg CSD_URL={}'.format(csd_url),
+                    '--build-arg PARCEL_URL={}'.format(parcel_url),
+                    str(image_folder)]
+    cmd = ' '.join(cmd_elements)
+    logger.debug('Running Docker build command (%s) ...', cmd)
+    if not args.dry_run:
+        subprocess.run(cmd, shell=True, check=True)
+
+    if args.push:
+        cmd = 'docker push {}'.format(image_name)
+        logger.debug('Running Docker push command (%s) ...', cmd)
         if not args.dry_run:
             subprocess.run(cmd, shell=True, check=True)
 
-        if args.push:
-            cmd = 'docker push {}'.format(image_name)
-            logger.debug('Running Dockerp ush command (%s) ...', cmd)
-            if not args.dry_run:
-                subprocess.run(cmd, shell=True, check=True)
+
+def _get_sdc_version(url):
+    """Parse the parcel manifest.json file to determine the SDC version corresponding to this build.  """
+    response = _get(url)
+    if not response.content:
+        raise Exception('No SDC version found in manifest.json.')
+    content = response.json()
+    return content['parcels'][0]['components'][0]['version']
+
+
+def _get(url):
+    response = requests.get(url)
+    response.raise_for_status()
+    return response
 
 
 if __name__ == '__main__':

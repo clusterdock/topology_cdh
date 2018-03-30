@@ -317,7 +317,9 @@ def main(args):
                                                      args.include_services, args.kafka_version, args.kudu_version))
     if args.sdc_version:
         product = 'STREAMSETS_DATACOLLECTOR'
-        sdc_parcel = cm_cluster.parcel(product=product, version=args.sdc_version)
+        # Remove RC from version.
+        version = args.sdc_version.rsplit('-RC')[0]
+        sdc_parcel = cm_cluster.parcel(product=product, version=version)
 
         # After we set CM's "Manage Parcels" config to False, the SDC parcel becomes
         # undistributed. After this, we may need to add the SDC parcel repo URL in order
