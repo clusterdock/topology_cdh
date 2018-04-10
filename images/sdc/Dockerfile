@@ -13,25 +13,24 @@ FROM alpine:latest
 MAINTAINER Dima Spivak <dima@spivak.ch>
 
 ARG CSD_DIRECTORY=/opt/cloudera/csd
-ARG CSD_URL=http://archives.streamsets.com/datacollector/2.7.2.0/csd/STREAMSETS-2.7.2.0.jar
+ARG CSD_URL=http://archives.streamsets.com/datacollector/3.1.0.0/csd/STREAMSETS-3.1.0.0.jar
 
-ARG PARCEL_DIRECTORY=/opt/cloudera/parcels/STREAMSETS_DATACOLLECTOR-2.7.2.0
-ARG PARCEL_URL=http://archives.streamsets.com/datacollector/2.7.2.0/parcel/STREAMSETS_DATACOLLECTOR-2.7.2.0-el6.parcel
+ARG PARCEL_REPO_DIRECTORY=/opt/cloudera/parcel-repo
+ARG PARCEL_URL=http://archives.streamsets.com/datacollector/3.1.0.0/parcel/STREAMSETS_DATACOLLECTOR-3.1.0.0-el6.parcel
 
 RUN apk --no-cache add tar
 
-RUN wget -O /parcel.tgz ${PARCEL_URL} && \
-    mkdir -p "$(dirname ${PARCEL_DIRECTORY})" && \
-    tar xf /parcel.tgz -C "$(dirname ${PARCEL_DIRECTORY})" && \
-    rm /parcel.tgz
+RUN mkdir -p ${PARCEL_REPO_DIRECTORY} && \
+    wget -P ${PARCEL_REPO_DIRECTORY} ${PARCEL_URL} && \
+    PARCEL_NAME=$(basename ${PARCEL_URL}) && \
+    cd ${PARCEL_REPO_DIRECTORY} && \
+    sha1sum ${PARCEL_NAME} | awk '{ print $1 }' > ${PARCEL_NAME}.sha
 
-# See http://community.cloudera.com/t5/Cloudera-Manager-Installation/Stop-CM-undistributing-my-parcel/m-p/61402.
-RUN touch "${PARCEL_DIRECTORY}/.dont_delete"
-
-VOLUME ${PARCEL_DIRECTORY}
+VOLUME ${PARCEL_REPO_DIRECTORY}
 
 RUN mkdir -p "${CSD_DIRECTORY}" && \
-    wget -O "${CSD_DIRECTORY}/$(basename ${CSD_URL})" "${CSD_URL}"
+    CSD_NAME=$(basename ${CSD_URL}) && \
+    wget -O "${CSD_DIRECTORY}/${CSD_NAME}" "${CSD_URL}"
 
 VOLUME ${CSD_DIRECTORY}
 

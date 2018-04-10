@@ -36,12 +36,12 @@ def main():
     parser = argparse.ArgumentParser(description=('Build Docker images with StreamSets '
                                                   'Data Collector parcels for clusterdock'),
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--build',
-                        help='The build to use from S3 (e.g. of the form "2038," "2.4," "latest")',
+    parser.add_argument('--sdc-build',
+                        help='The build from which to install SDC(e.g. of the form "2038," "2.4," "latest")',
                         default=DEFAULT_BUILD)
     parser.add_argument('--dry-run', help="Don't actually do the `docker build`", action='store_true')
-    parser.add_argument('--s3-bucket',
-                        help='S3 bucket to get parcels from',
+    parser.add_argument('--sdc-s3-bucket',
+                        help='S3 bucket to get SDC parcels from',
                         default=DEFAULT_S3_BUCKET)
     parser.add_argument('--sdc-version-tag',
                         help='A tag to use for images instead of the SDC version gleamed from '
@@ -55,10 +55,10 @@ def main():
     if args.dry_run:
         logger.info('Doing dry-run of tool ...')
 
-    sdc_version = _get_sdc_version(PARCEL_MANIFEST_URL_TEMPLATE.format(build=args.build, s3_bucket=args.s3_bucket))
+    sdc_version = _get_sdc_version(PARCEL_MANIFEST_URL_TEMPLATE.format(build=args.sdc_build, s3_bucket=args.sdc_s3_bucket))
     image_name = IMAGE_NAME_TEMPLATE.format(args.sdc_version_tag or sdc_version)
-    csd_url = CSD_URL_TEMPLATE.format(sdc_version, build=args.build, s3_bucket=args.s3_bucket)
-    parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version, build=args.build, s3_bucket=args.s3_bucket)
+    csd_url = CSD_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
+    parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
 
     cmd_elements = ['docker build -t {}'.format(image_name),
                     '--build-arg CSD_URL={}'.format(csd_url),
