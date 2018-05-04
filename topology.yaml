@@ -64,6 +64,10 @@ start args:
     --kerberos-principals:
         help: If specified, a comma-separated list of Kerberos user principals to create in KDC
         metavar: princ1,princ2,...
+    --kerberos-ticket-lifetime:
+        default: 86400
+        help: If specified, the maximum time period in seconds for which a ticket may be valid in the realm
+        metavar: seconds
     --kudu-version:
         help: If specified, the version of Kudu to install from archive.cloudera.com
         metavar: ver

@@ -107,7 +107,7 @@ def main(args):
 
     if args.kerberos:
         cluster.kdc_node = kdc_node
-        _configure_kdc(cluster, args.kerberos_principals, quiet=quiet)
+        _configure_kdc(cluster, args.kerberos_principals, args.kerberos_ticket_lifetime, quiet=quiet)
         _install_kerberos_clients(nodes, quiet=quiet)
         if args.kerberos_principals:
             _create_kerberos_cluster_users(nodes, args.kerberos_principals, quiet=quiet)
@@ -274,13 +274,9 @@ def main(args):
         logger.info('Configuring Kudu ...')
         _configure_kudu(deployment, cluster, kudu_version=args.kudu_version)
 
-    if args.sdc_version:
-        logger.info('Configuring StreamSets Data Collector ...')
-        _configure_sdc(deployment, cluster, sdc_version=args.sdc_version)
-
     if args.kerberos:
         logger.info('Configure Cloudera Manager for Kerberos ...')
-        _configure_cm_for_kerberos(deployment, cluster)
+        _configure_cm_for_kerberos(deployment, cluster, args.kerberos_ticket_lifetime)
 
     logger.info('Deploying client config ...')
     cm_cluster.deploy_client_config()
@@ -295,7 +291,7 @@ def main(args):
         _validate_service_health(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
 
 
-def _configure_kdc(cluster, kerberos_principals, quiet):
+def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
     kdc_node = cluster.kdc_node
 
     logger.info('Updating KDC configurations ...')
@@ -303,19 +299,24 @@ def _configure_kdc(cluster, kerberos_principals, quiet):
 
     logger.debug('Updating krb5.conf ...')
     krb5_conf = cluster.kdc_node.get_file(KDC_KRB5_CONF_FILENAME)
-    kdc_node.put_file(KDC_KRB5_CONF_FILENAME,
-                      re.sub(r'EXAMPLE.COM', realm,
-                             re.sub(r'example.com', cluster.network,
-                                    re.sub(r'kerberos.example.com',
-                                           kdc_node.fqdn,
-                                           krb5_conf))))
+    # Here '\g<1>' represents group matched in regex which is the original default value of ticket_lifetime.
+    ticket_lifetime_replacement = kerberos_ticket_lifetime if kerberos_ticket_lifetime else '\g<1>'
+    krb5_conf_contents = re.sub(r'EXAMPLE.COM', realm,
+                                re.sub(r'example.com', cluster.network,
+                                       re.sub(r'ticket_lifetime = ((.)*)',
+                                              r'ticket_lifetime = {}'.format(ticket_lifetime_replacement),
+                                              re.sub(r'kerberos.example.com',
+                                                     kdc_node.fqdn,
+                                                     krb5_conf))))
+    kdc_node.put_file(KDC_KRB5_CONF_FILENAME, krb5_conf_contents)
 
     logger.debug('Updating kdc.conf ...')
     kdc_conf = kdc_node.get_file(KDC_CONF_FILENAME)
+    max_time_replacement = kerberos_ticket_lifetime if kerberos_ticket_lifetime else '1d'
     kdc_node.put_file(KDC_CONF_FILENAME,
                       re.sub(r'EXAMPLE.COM', realm,
                              re.sub(r'\[kdcdefaults\]',
-                                    r'[kdcdefaults]\n max_renewablelife = 7d\n max_life = 1d',
+                                    r'[kdcdefaults]\n max_renewablelife = 7d\n max_life = {}'.format(max_time_replacement),
                                     kdc_conf)))
 
     logger.debug('Updating kadm5.acl ...')
@@ -335,8 +336,13 @@ def _configure_kdc(cluster, kerberos_principals, quiet):
     if kerberos_principals:
         principals = ['{}@{}'.format(primary, realm)
                       for primary in kerberos_principals.split(',')]
-        kdc_commands.extend(['kadmin.local -q "addprinc -randkey {}"'.format(principal)
-                             for principal in principals])
+        if kerberos_ticket_lifetime:
+            kdc_commands.extend([('kadmin.local -q "addprinc -maxlife {}sec '
+                                  '-maxrenewlife 5day -randkey {}"'.format(kerberos_ticket_lifetime, principal))
+                                 for principal in principals])
+        else:
+            kdc_commands.extend(['kadmin.local -q "addprinc -randkey {}"'.format(principal)
+                                 for principal in principals])
         kdc_commands.append('kadmin.local -q '
                             '"xst -norandkey -k {} {}"'.format(KDC_KEYTAB_FILENAME,
                                                                ' '.join(principals)))
@@ -348,7 +354,7 @@ def _configure_kdc(cluster, kerberos_principals, quiet):
     if kerberos_principals:
         kdc_commands.append('chmod 644 {}'.format(KDC_KEYTAB_FILENAME))
 
-    kdc_node.execute('; '.join(kdc_commands),
+    kdc_node.execute('&& '.join(kdc_commands),
                      quiet=quiet)
 
     logger.info('Validating health of Kerberos services ...')
@@ -389,12 +395,19 @@ def _create_kerberos_cluster_users(nodes, kerberos_principals, quiet):
         node.execute('; '.join(commands), quiet=quiet)
 
 
-def _configure_cm_for_kerberos(deployment, cluster):
+def _configure_cm_for_kerberos(deployment, cluster, kerberos_ticket_lifetime):
     realm = cluster.network.upper()
     kerberos_config = dict(SECURITY_REALM=realm,
-                           KDC_HOST=KDC_HOSTNAME,
+                           KDC_HOST=cluster.kdc_node.fqdn,
+                           KDC_ADMIN_HOST=cluster.kdc_node.fqdn,
                            KRB_MANAGE_KRB5_CONF=True,
                            KRB_ENC_TYPES='aes256-cts-hmac-sha1-96')
+    # Suppress CM's warnings for built-in parameter validation for Kerberos ticket lifetime and renewable lifetime.
+    # This will allow ticket lifetime and renewable lifetime to be less than an hour.
+    if kerberos_ticket_lifetime:
+        kerberos_config.update(dict(scm_config_suppression_krb_renew_lifetime=True,
+                                    scm_config_suppression_krb_ticket_lifetime=True,
+                                    krb_ticket_lifetime=kerberos_ticket_lifetime))
     logger.debug('Updating CM server configurations ...')
     deployment.update_cm_config(kerberos_config)
 
@@ -440,6 +453,11 @@ def _configure_cm_for_kerberos(deployment, cluster):
                        timeout=180,
                        success=success, failure=failure)
 
+    if kerberos_ticket_lifetime:
+        cm_kerberos_principals = deployment.get_cm_kerberos_principals()
+        logger.debug('cm_kerberos_principals = %s', cm_kerberos_principals)
+        _apply_kerberos_ticket_expiration_for_cm_principals(cluster, cm_kerberos_principals, kerberos_ticket_lifetime)
+
     for service in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME):
         if service['type'] == 'HUE':
             _apply_kerberos_fix_for_hue(cluster)
@@ -463,7 +481,22 @@ def _apply_kerberos_fix_for_hue(cluster):
         'service krb5kdc restart',
         'service kadmin restart'
     ]
-    kdc_node.execute('; '.join(kdc_hue_commands))
+    kdc_node.execute('&& '.join(kdc_hue_commands))
+
+
+def _apply_kerberos_ticket_expiration_for_cm_principals(cluster, cm_kerberos_principals, kerberos_ticket_lifetime):
+    """Apply Kerberos ticket expiration for Kerberos principals needed by the services being managed by
+    Cloudera Manager.
+    """
+    logger.info('Applying kerberos ticket expiration...')
+
+    change_ticket_expiration_cmd = 'kadmin.local -q "modprinc -maxrenewlife 5day -maxlife {maxlife}sec {principal}"'
+    commands = [
+        change_ticket_expiration_cmd.format(maxlife=kerberos_ticket_lifetime, principal=principal)
+        for principal in cm_kerberos_principals
+    ]
+    commands.extend(['service krb5kdc restart', 'service kadmin restart'])
+    cluster.kdc_node.execute('&& '.join(commands))
 
 
 def _command_condition(deployment, command_id, command_description):

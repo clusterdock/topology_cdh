@@ -304,6 +304,14 @@ class ClouderaManagerDeployment:
         }
         return self.api_client.deploy_cluster_kerberos_client_config(cluster_name, host_ref_list)
 
+    def get_cm_kerberos_principals(self):
+        """A list of strings for Kerberos principals.
+
+        Returns:
+            A list of Kerberos principals needed by the services being managed by Cloudera Manager.
+        """
+        return self.api_client.get_cm_kerberos_principals()['items']
+
     def create_cluster_services(self, cluster_name, services):
         """Create a list of services.
 

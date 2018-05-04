@@ -506,6 +506,14 @@ class ApiClient:
                                                                    cluster_name),
                           data={}).json()
 
+    def get_cm_kerberos_principals(self):
+        """Get list of Kerberos principals needed by the services being managed by Cloudera Manager.
+
+        Returns:
+            A dictionary (principal) of Kerberos principals needed by the services being managed by Cloudera Manager.
+        """
+        return self._get(endpoint='{}/cm/kerberosPrincipals'.format(self.api_version)).json()
+
     def start_all_cluster_services(self, cluster_name):
         """Start all cluster services in the cluster.
 
