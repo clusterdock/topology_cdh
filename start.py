@@ -1130,6 +1130,12 @@ def _configure_sdc(deployment, cluster, is_kerberos_enabled):
                                                   'type': 'STREAMSETS',
                                                   'displayName': 'StreamSets',
                                                   'roles': [datacollector_role]}])
+    # When running an application  with Spark2, the following
+    # environment variables must be set before starting StreamSets Data Collector.
+    environment_variables = {'SPARK_SUBMIT_YARN_COMMAND': '/usr/bin/spark2-submit',
+                             'SPARK_KAFKA_VERSION': '0.10'}
+    configs = {'sdc-env.sh_role_safety_valve': '\n'.join('export {}={}'.format(key, value)
+                                                         for key, value in environment_variables.items())}
     # When running an application on YARN, the Spark executor requires access to the spark-submit script located in
     # the Spark installation directory. Default is directory specified by SPARK_HOME environment variable.
     # Hence SPARK_HOME environment variable must be set before starting StreamSets Data Collector.
