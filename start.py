@@ -32,6 +32,8 @@ CM_AGENT_CONFIG_FILE_PATH = '/etc/cloudera-scm-agent/config.ini'
 CM_PRINCIPAL_PASSWORD = 'cldadmin'
 CM_PRINCIPAL_USER = 'cloudera-scm/admin'
 CM_SERVER_ETC_DEFAULT = '/etc/default/cloudera-scm-server'
+CSD_DIRECTORY = '/opt/cloudera/csd'
+PARCEL_REPO_DIRECTORY = '/opt/cloudera/parcel-repo'
 DEFAULT_CLUSTER_NAME = 'cluster'
 SECONDARY_NODE_TEMPLATE_NAME = 'Secondary'
 
@@ -88,6 +90,14 @@ def main(args):
                                                        args.java)
         for node in nodes:
             node.volumes.append(java_image)
+
+    if args.spark2_version:
+        spark2_parcel_image = ('{}/{}/clusterdock:topology_cdh-spark-{}').format(args.registry,
+                                                                                 args.namespace or DEFAULT_NAMESPACE,
+                                                                                 args.spark2_version)
+        logger.debug('Adding Spark2 parcel image %s to CM nodes ...', spark2_parcel_image)
+        for node in nodes:
+            node.volumes.append(spark2_parcel_image)
 
     if args.kerberos:
         kerberos_config_host_dir = os.path.expanduser(args.kerberos_config_directory)
@@ -217,6 +227,9 @@ def main(args):
     logger.info('Updating CM server configurations ...')
     deployment.update_cm_config(configs={'manages_parcels': True})
 
+    if args.spark2_version:
+        _install_service_from_local_repo(deployment, cluster, product='SPARK2', prefix='SPARK2')
+
     if args.include_services:
         if args.exclude_services:
             raise ValueError('Cannot pass both --include-services and --exclude-services.')
@@ -266,6 +279,10 @@ def main(args):
             deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
                                                          service_name=service['name'])
 
+    if args.spark2_version:
+        logger.info('Configuring Spark2 ...')
+        _configure_spark2(deployment, cluster, secondary_nodes[0])
+
     if args.kafka_version:
         logger.info('Configuring Kafka ...')
         _configure_kafka(deployment, cluster, kafka_version=args.kafka_version)
@@ -289,6 +306,11 @@ def main(args):
 
         logger.info('Validating service health ...')
         _validate_service_health(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
+    else:
+        # This is needed due to the fact some services might have run first_run_service command while configuring.
+        # first_run_service command in turn starts the service along with its dependent services.
+        logger.info('Stopping cluster services ...')
+        cm_cluster.stop()
 
 
 def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
@@ -578,6 +600,41 @@ def _configure_kafka(deployment, cluster, kafka_version):
                 view='full'
             )['log.dirs'].split(','))
             cluster.primary_node.execute('rm -rf {}'.format(data_directories))
+
+
+def _install_service_from_local_repo(deployment, cluster, product, prefix, version=None):
+    # We install service using local repo /opt/cloudera/parcel-repo.
+    # Set file and folder permissions correctly.
+    commands = ['chown cloudera-scm:cloudera-scm {} {}'.format(CSD_DIRECTORY, PARCEL_REPO_DIRECTORY),
+                'chown cloudera-scm:cloudera-scm {}/{}*.jar'.format(CSD_DIRECTORY, prefix),
+                'chmod 644 {}/{}*.jar'.format(CSD_DIRECTORY, prefix),
+                'chown cloudera-scm:cloudera-scm {}/{}*'.format(PARCEL_REPO_DIRECTORY, prefix)]
+    cluster.primary_node.execute(' && '.join(commands))
+
+    # The parcel is already present. Hence just distribute and activate it after refresing parcel repos.
+    deployment.refresh_parcel_repos()
+    parcel = deployment.cluster(DEFAULT_CLUSTER_NAME).parcel(product=product, version=version, stage='DOWNLOADED')
+    parcel.distribute().activate()
+
+
+def _configure_spark2(deployment, cluster, history_server_node):
+    logger.info('Adding Spark2 service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
+    service_name = 'spark2_on_yarn'
+    history_server_role = {'type': 'SPARK2_YARN_HISTORY_SERVER',
+                           'hostRef': {'hostId': history_server_node.host_id}}
+    gateway_roles = [{'type': 'GATEWAY', 'hostRef': node.host_id}
+                     for node in cluster if node.group == 'primary' or 'secondary']
+    service_config = {'items': [{'name': 'hive_service', 'value': 'hive', 'sensitive': False},
+                                {'name': 'yarn_service', 'value': 'yarn', 'sensitive': False}]}
+    deployment.create_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME,
+                                       services=[{'name': service_name,
+                                                  'type': 'SPARK2_ON_YARN',
+                                                  'displayName': 'Spark2',
+                                                  'roles': [history_server_role] + gateway_roles,
+                                                  'config': service_config}])
+    # first_run_service is needed as it creates HDFS dir. /user/spark/spark2ApplicationHistory that is needed by
+    # Spark2 History Server. Without that, starting of Spark2 service fails.
+    deployment.first_run_service(DEFAULT_CLUSTER_NAME, service_name, 300)
 
 
 def _configure_kudu(deployment, cluster, kudu_version):

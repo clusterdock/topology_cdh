@@ -71,6 +71,8 @@ To see full usage instructions for the ``start`` action, use ``-h``/``--help``:
                             archive.cloudera.com (default: None)
       --kudu-version ver    If specified, the version of Kudu to install from
                             archive.cloudera.com (default: None)
+      --spark2-version ver  If specified, the version of Spark2 to install from
+                            archive.cloudera.com (default: 2_1-r1)
 
     Node groups:
       --primary-node node [node ...]

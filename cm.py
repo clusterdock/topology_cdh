@@ -179,6 +179,10 @@ class ClouderaManagerCluster:
         wait_for_condition(condition=condition, condition_args=[command_id],
                            time_between_checks=3, timeout=600, success=success, failure=failure)
 
+    def stop(self):
+        command_id = self.api_client.stop_all_cluster_services(cluster_name=self.name)['id']
+        _wait_for_command(self, command_id)
+
 
 class ClouderaManagerDeployment:
     """Class to interact with a Cloudera Manager deployment.
@@ -514,3 +518,29 @@ class ClouderaManagerDeployment:
                                                    host_template_name=host_template_name,
                                                    start_roles=start_roles,
                                                    host_ref_list=host_ref_list)
+
+    def first_run_service(self, cluster_name, service_name, timeout=180):
+        command_id = self.api_client.first_run_cluster_service(cluster_name=cluster_name,
+                                                               service_name=service_name)['id']
+        _wait_for_command(self, command_id, timeout)
+
+
+def _wait_for_command(object, command_id, timeout=180):
+    def condition(object, command_id):
+        command_information = object.api_client.get_command_information(command_id)
+        active = command_information.get('active')
+        success = command_information.get('success')
+        name = command_information.get('name')
+        logger.debug('Run %s command: (active: %s, success: %s)', name, active, success)
+        if not active and not success:
+            raise Exception('Failed to run command {}.'.format(name))
+        return not active and success
+
+    def success(time):
+        logger.debug('Command ran in %s seconds.', time)
+
+    def failure(timeout):
+        raise TimeoutError('Timed out after {} seconds waiting '
+                           'for command to run.'.format(timeout))
+    wait_for_condition(condition=condition, condition_args=[object, command_id],
+                       time_between_checks=3, timeout=timeout, success=success, failure=failure)

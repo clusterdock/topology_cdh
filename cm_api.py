@@ -381,6 +381,21 @@ class ApiClient:
                                                                         cluster_name),
                           data=host_ref_list).json()
 
+    def first_run_cluster_service(self, cluster_name, service_name):
+        """Run firstRun on a service from the cluster. This command prepares and starts the service.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the service.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/services/{}/'
+                                    'commands/firstRun').format(self.api_version,
+                                                                cluster_name,
+                                                                service_name)).json()
+
     def update_all_hosts_config(self, config_list):
         """Update the default configuration values for all hosts.
 
@@ -525,6 +540,18 @@ class ApiClient:
         """
         return self._post(endpoint='{}/clusters/{}/commands/start'.format(self.api_version,
                                                                           cluster_name)).json()
+
+    def stop_all_cluster_services(self, cluster_name):
+        """Stop all cluster services in the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint='{}/clusters/{}/commands/stop'.format(self.api_version,
+                                                                         cluster_name)).json()
 
     def get_cm_service(self, view='summary'):
         """Get Cloudera Manager Services service.
