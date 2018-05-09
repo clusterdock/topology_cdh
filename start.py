@@ -450,7 +450,6 @@ def _is_service_to_add(service_type, include_services, exclude_services):
     else:
         return True
 
-
 def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
     kdc_node = cluster.kdc_node
 
