@@ -180,8 +180,15 @@ class ClouderaManagerCluster:
                            time_between_checks=3, timeout=600, success=success, failure=failure)
 
     def stop(self):
-        command_id = self.api_client.stop_all_cluster_services(cluster_name=self.name)['id']
-        _wait_for_command(self, command_id)
+        services = self.api_client.get_cluster_services(cluster_name=self.name,
+                                                        view='summary')['items']
+        for service in services:
+            # If stop_all_cluster_services is called when none of the cluster services is started, the command fails.
+            # Hence call stop_all_cluster_services only if at least one service is started.
+            if service['serviceState'] == 'STARTED':
+                command_id = self.api_client.stop_all_cluster_services(cluster_name=self.name)['id']
+                _wait_for_command(self, command_id)
+                break
 
 
 class ClouderaManagerDeployment:

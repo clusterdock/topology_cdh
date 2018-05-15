@@ -75,6 +75,5 @@ start args:
         action: store_true
         help: If specified, attempt to expose container ports to the same port number on the host
     --spark2-version:
-        default: 2.1-r1
         help: If specified, the version of Spark2 to install from archive.cloudera.com
         metavar: ver

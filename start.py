@@ -34,6 +34,9 @@ CM_PRINCIPAL_USER = 'cloudera-scm/admin'
 CM_SERVER_ETC_DEFAULT = '/etc/default/cloudera-scm-server'
 CSD_DIRECTORY = '/opt/cloudera/csd'
 PARCEL_REPO_DIRECTORY = '/opt/cloudera/parcel-repo'
+# In the following two locations, clusterdock volume mounts the csds and parcels for cloudera services.
+CLUSTERDOCK_CSD_DIRECTORY = '/opt/clusterdock/csd'
+CLUSTERDOCK_PARCEL_REPO_DIRECTORY = '/opt/clusterdock/parcel-repo'
 DEFAULT_CLUSTER_NAME = 'cluster'
 SECONDARY_NODE_TEMPLATE_NAME = 'Secondary'
 
@@ -114,6 +117,9 @@ def main(args):
 
     # Keep track of whether to suppress DEBUG-level output in commands.
     quiet = not args.verbose
+
+    if args.spark2_version:
+        _install_service_from_local_repo(cluster, product='SPARK2')
 
     if args.kerberos:
         cluster.kdc_node = kdc_node
@@ -227,9 +233,6 @@ def main(args):
     logger.info('Updating CM server configurations ...')
     deployment.update_cm_config(configs={'manages_parcels': True})
 
-    if args.spark2_version:
-        _install_service_from_local_repo(deployment, cluster, product='SPARK2', prefix='SPARK2')
-
     if args.include_services:
         if args.exclude_services:
             raise ValueError('Cannot pass both --include-services and --exclude-services.')
@@ -298,6 +301,13 @@ def main(args):
     logger.info('Deploying client config ...')
     cm_cluster.deploy_client_config()
 
+    # This is needed due to the fact some service might have run first_run_service command while configuring.
+    # first_run_service command in turn starts the service along with its dependent services.
+    # In case of dont_start_cluster, the cluster services need to be stopped.
+    # Otherwise, some of these started services end up with stale configurations at this point
+    # - which asks for their stop and later run start.
+    logger.info('Stopping cluster services ...')
+    cm_cluster.stop()
     if not args.dont_start_cluster:
         logger.info('Starting cluster services ...')
         cm_cluster.start()
@@ -306,11 +316,6 @@ def main(args):
 
         logger.info('Validating service health ...')
         _validate_service_health(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
-    else:
-        # This is needed due to the fact some services might have run first_run_service command while configuring.
-        # first_run_service command in turn starts the service along with its dependent services.
-        logger.info('Stopping cluster services ...')
-        cm_cluster.stop()
 
 
 def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
@@ -602,28 +607,31 @@ def _configure_kafka(deployment, cluster, kafka_version):
             cluster.primary_node.execute('rm -rf {}'.format(data_directories))
 
 
-def _install_service_from_local_repo(deployment, cluster, product, prefix, version=None):
+def _install_service_from_local_repo(cluster, product):
     # We install service using local repo /opt/cloudera/parcel-repo.
     # Set file and folder permissions correctly.
-    commands = ['chown cloudera-scm:cloudera-scm {} {}'.format(CSD_DIRECTORY, PARCEL_REPO_DIRECTORY),
-                'chown cloudera-scm:cloudera-scm {}/{}*.jar'.format(CSD_DIRECTORY, prefix),
-                'chmod 644 {}/{}*.jar'.format(CSD_DIRECTORY, prefix),
-                'chown cloudera-scm:cloudera-scm {}/{}*'.format(PARCEL_REPO_DIRECTORY, prefix)]
+    commands = ['chown -R cloudera-scm:cloudera-scm {} {}'.format(CLUSTERDOCK_CSD_DIRECTORY,
+                                                                  CLUSTERDOCK_PARCEL_REPO_DIRECTORY),
+                'chmod 644 {}/{}/*.jar'.format(CLUSTERDOCK_CSD_DIRECTORY, product),
+                'ln -s {}/{}/*.jar {}'.format(CLUSTERDOCK_CSD_DIRECTORY, product, CSD_DIRECTORY),
+                'chmod 644 {}/*.jar'.format(CSD_DIRECTORY),
+                'chown cloudera-scm:cloudera-scm {}/*.jar'.format(CSD_DIRECTORY),
+                'ln -s {}/{}/* {}/'.format(CLUSTERDOCK_PARCEL_REPO_DIRECTORY, product, PARCEL_REPO_DIRECTORY)]
     cluster.primary_node.execute(' && '.join(commands))
-
-    # The parcel is already present. Hence just distribute and activate it after refresing parcel repos.
-    deployment.refresh_parcel_repos()
-    parcel = deployment.cluster(DEFAULT_CLUSTER_NAME).parcel(product=product, version=version, stage='DOWNLOADED')
-    parcel.distribute().activate()
 
 
 def _configure_spark2(deployment, cluster, history_server_node):
+    # The parcel is already present. Hence just distribute and activate it after refresing parcel repos.
+    deployment.refresh_parcel_repos()
+    parcel = deployment.cluster(DEFAULT_CLUSTER_NAME).parcel(product='SPARK2', stage='DOWNLOADED')
+    parcel.distribute().activate()
+
     logger.info('Adding Spark2 service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     service_name = 'spark2_on_yarn'
     history_server_role = {'type': 'SPARK2_YARN_HISTORY_SERVER',
                            'hostRef': {'hostId': history_server_node.host_id}}
     gateway_roles = [{'type': 'GATEWAY', 'hostRef': node.host_id}
-                     for node in cluster if node.group == 'primary' or 'secondary']
+                     for node in cluster if node.group in ['primary', 'secondary']]
     service_config = {'items': [{'name': 'hive_service', 'value': 'hive', 'sensitive': False},
                                 {'name': 'yarn_service', 'value': 'yarn', 'sensitive': False}]}
     deployment.create_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME,

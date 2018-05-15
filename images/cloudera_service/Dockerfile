@@ -14,9 +14,11 @@ MAINTAINER Dima Spivak <dima@spivak.ch>
 
 ARG CSD_URL=http://archive.cloudera.com/spark2/csd/SPARK2_ON_YARN-2.1.0.cloudera2.jar
 ARG PARCEL_URL=http://archive.cloudera.com/spark2/parcels/2.1.0.cloudera2/SPARK2-2.1.0.cloudera2-1.cdh5.7.0.p0.171658-el6.parcel
+# Following PRODUCT value needs to be exactly the same as cloudera service specifies.
+ARG PRODUCT=SPARK2
 
-ARG CSD_DIRECTORY=/opt/cloudera/csd
-ARG PARCEL_REPO_DIRECTORY=/opt/cloudera/parcel-repo
+ARG CSD_DIRECTORY=/opt/clusterdock/csd/${PRODUCT}
+ARG PARCEL_REPO_DIRECTORY=/opt/clusterdock/parcel-repo/${PRODUCT}
 
 RUN apk --no-cache add tar
 
