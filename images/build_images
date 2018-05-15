@@ -30,6 +30,8 @@ CSD_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/csd/STREAMSETS-{0}.
 IMAGE_NAME_TEMPLATE = 'streamsets/clusterdock:topology_cdh-streamsets_datacollector-{}'
 PARCEL_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/parcel/STREAMSETS_DATACOLLECTOR-{0}-el6.parcel'
 PARCEL_MANIFEST_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/parcel/manifest.json'
+# Name of service in CDH cluster.
+SDC_PRODUCT_NAME = 'STREAMSETS_DATACOLLECTOR'
 
 
 def main():
@@ -50,7 +52,7 @@ def main():
     parser.add_argument('-p', '--push', help='Push Docker images after building', action='store_true')
     args = parser.parse_args()
 
-    image_folder = Path(Path(__file__).parent, 'sdc').resolve()
+    image_folder = Path(Path(__file__).parent, 'cloudera_service').resolve()
 
     if args.dry_run:
         logger.info('Doing dry-run of tool ...')
@@ -63,6 +65,7 @@ def main():
     cmd_elements = ['docker build -t {}'.format(image_name),
                     '--build-arg CSD_URL={}'.format(csd_url),
                     '--build-arg PARCEL_URL={}'.format(parcel_url),
+                    '--build-arg PRODUCT={}'.format(SDC_PRODUCT_NAME),
                     str(image_folder)]
     cmd = ' '.join(cmd_elements)
     logger.debug('Running Docker build command (%s) ...', cmd)

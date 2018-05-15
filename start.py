@@ -190,6 +190,9 @@ def main(args):
         logger.info('Installing Spark2 from local repo ...')
         _install_service_from_local_repo(cluster, product='SPARK2')
 
+    if args.sdc_version:
+        _install_service_from_local_repo(cluster, product='STREAMSETS_DATACOLLECTOR')
+
     if args.kerberos:
         cluster.kdc_node = kdc_node
         _configure_kdc(cluster, args.kerberos_principals, args.kerberos_ticket_lifetime, quiet=quiet)
@@ -317,15 +320,6 @@ def main(args):
     services_to_add.update(_validate_services_to_add(cdh_version_tuple, cm_cluster, args.exclude_services,
                                                      args.include_services, args.kafka_version, args.kudu_version))
     if args.sdc_version:
-        # We install StreamSets DataCollector using local repo /opt/cloudera/parcel-repo.
-        # Set file and folder permissions correctly.
-        commands = ['chown cloudera-scm:cloudera-scm /opt/cloudera/csd',
-                    'chown cloudera-scm:cloudera-scm /opt/cloudera/parcel-repo',
-                    'chown cloudera-scm:cloudera-scm /opt/cloudera/csd/STREAMSETS*.jar',
-                    'chmod 644 /opt/cloudera/csd/STREAMSETS*.jar',
-                    'chown cloudera-scm:cloudera-scm /opt/cloudera/parcel-repo/STREAMSETS_*']
-        primary_node.execute(' && '.join(commands))
-
         # The parcel is already present. Hence just distribute and activate it after refresing parcel repos.
         product = 'STREAMSETS_DATACOLLECTOR'
         deployment.refresh_parcel_repos()
@@ -406,7 +400,7 @@ def main(args):
 
     if args.sdc_version:
         logger.info('Configuring StreamSets Data Collector ...')
-        _configure_sdc(deployment, cluster, is_kerberos_enabled=args.kerberos)
+        _configure_sdc(deployment, cluster, args)
 
     if args.kerberos:
         logger.info('Configure Cloudera Manager for Kerberos ...')
@@ -1120,7 +1114,7 @@ def _setup_ssl_encryption_authentication(cluster, service):
 
     cluster.primary_node.execute(' && '.join(ssl_authentication_commands + ssl_commands))
 
-def _configure_sdc(deployment, cluster, is_kerberos_enabled):
+def _configure_sdc(deployment, cluster, args):
     logger.info('Adding StreamSets service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     datacollector_role = {'type': 'DATACOLLECTOR',
                           'hostRef': {'hostId': cluster.primary_node.host_id}}
@@ -1129,18 +1123,21 @@ def _configure_sdc(deployment, cluster, is_kerberos_enabled):
                                                   'type': 'STREAMSETS',
                                                   'displayName': 'StreamSets',
                                                   'roles': [datacollector_role]}])
-    # When running an application  with Spark2, the following
-    # environment variables must be set before starting StreamSets Data Collector.
-    environment_variables = {'SPARK_SUBMIT_YARN_COMMAND': '/usr/bin/spark2-submit',
-                             'SPARK_KAFKA_VERSION': '0.10'}
+    if args.spark2_version:
+        # When running an application  with Spark2, the following
+        # environment variables must be set before starting StreamSets Data Collector.
+        environment_variables = {'SPARK_SUBMIT_YARN_COMMAND': '/usr/bin/spark2-submit',
+                                 'SPARK_KAFKA_VERSION': '0.10',
+                                 'SPARK_HOME': '/opt/cloudera/parcels/SPARK2/lib/spark2'}
+    else:
+        # When running an application on YARN, the Spark executor requires access to the spark-submit script located in
+        # the Spark installation directory. Default is directory specified by SPARK_HOME environment variable.
+        # Hence SPARK_HOME environment variable must be set before starting StreamSets Data Collector.
+        environment_variables = {'SPARK_HOME': '/opt/cloudera/parcels/CDH/lib/spark'}
     configs = {'sdc-env.sh_role_safety_valve': '\n'.join('export {}={}'.format(key, value)
                                                          for key, value in environment_variables.items())}
-    # When running an application on YARN, the Spark executor requires access to the spark-submit script located in
-    # the Spark installation directory. Default is directory specified by SPARK_HOME environment variable.
-    # Hence SPARK_HOME environment variable must be set before starting StreamSets Data Collector.
-    configs = {'sdc-env.sh_role_safety_valve': 'export SPARK_HOME=/opt/cloudera/parcels/CDH/lib/spark'}
 
-    if is_kerberos_enabled:
+    if args.kerberos:
         # Create JAAS config file on node-1. Needed to access kerberized Kafka.
         primary_node = cluster.primary_node
         sdc_principal = 'sdc/{kafka_node_name}@{realm}'.format(kafka_node_name=primary_node.fqdn,
