@@ -91,6 +91,7 @@ DB_MGMT_PROPERTIES_FILENAME = '/etc/cloudera-scm-server/db.mgmt.properties'
 # which is required for Navigator.
 EARLIEST_CDH_VERSION_WITH_NO_REPORTS_MANAGER_NEEDED = (5, 14, 0)
 NAVIGATOR_POSTGRESQL_PORT = 7432
+SDC_PORT = 18630
 
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
