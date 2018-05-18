@@ -18,6 +18,7 @@ import socket
 
 from configobj import ConfigObj
 
+from clusterdock.config import CLUSTERDOCK_CONFIG_DIRECTORY
 from clusterdock.models import Cluster, client, Node
 from clusterdock.utils import nested_get, wait_for_condition
 
@@ -56,6 +57,20 @@ KUDU_PARCEL_VERSIONS = {'1.2.0': '5.10.0',
                         '1.3.0': '5.11.0',
                         '1.4.0': '5.12.0'}
 
+# Files placed in this directory on primary_node are available
+# in clusterdock_config_directory after cluster is started.
+# Also, this gets volume mounted to all secondary nodes and hence available there too.
+CLUSTERDOCK_CLIENT_CONTAINER_DIR = '/etc/clusterdock/client'
+
+SSL_SERVER_CONTAINER_DIR = '/etc/clusterdock/server/ssl'
+SSL_CLIENT_CONTAINER_DIR = '/etc/clusterdock/client/ssl'
+SSL_SERVER_KEYSTORE = 'server.keystore.jks'
+SSL_SERVER_TRUSTSTORE = 'server.truststore.jks'
+SSL_CLIENT_KEYSTORE = 'client.keystore.jks'
+SSL_CLIENT_TRUSTSTORE = 'client.truststore.jks'
+SSL_SERVER_PASSWORD = 'serverpass'
+SSL_CLIENT_PASSWORD = 'clientpass'
+
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
 
@@ -80,10 +95,12 @@ def main(args):
     ports = [{CM_PORT: CM_PORT} if args.predictable else CM_PORT,
              {HUE_PORT: HUE_PORT} if args.predictable else HUE_PORT]
 
+    volumes = [{CLUSTERDOCK_CONFIG_DIRECTORY: CLUSTERDOCK_CLIENT_CONTAINER_DIR}]
     primary_node = Node(hostname=args.primary_node[0], group='primary',
                         image=primary_node_image, ports=ports,
-                        healthcheck=cm_server_healthcheck)
-    secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image)
+                        healthcheck=cm_server_healthcheck,
+                        volumes=volumes)
+    secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image, volumes=volumes)
                        for hostname in args.secondary_nodes]
     nodes = [primary_node] + secondary_nodes
 
@@ -282,13 +299,16 @@ def main(args):
             deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
                                                          service_name=service['name'])
 
+    if args.ssl:
+        _setup_ssl(cluster, ['KAFKA'], args.ssl)
+
     if args.spark2_version:
         logger.info('Configuring Spark2 ...')
         _configure_spark2(deployment, cluster, secondary_nodes[0])
 
     if args.kafka_version:
         logger.info('Configuring Kafka ...')
-        _configure_kafka(deployment, cluster, kafka_version=args.kafka_version)
+        _configure_kafka(deployment, cluster, args)
 
     if args.kudu_version:
         logger.info('Configuring Kudu ...')
@@ -538,11 +558,11 @@ def _command_condition(deployment, command_id, command_description):
 
 # TODO: Get rid of the excess amount of code duplication between the following
 # function and _configure_kudu.
-def _configure_kafka(deployment, cluster, kafka_version):
+def _configure_kafka(deployment, cluster, args):
     for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
         if parcel.product == 'KAFKA' and parcel.stage in 'ACTIVATED':
             parcel_kafka_version = parcel.version.split('-')[0]
-            if parcel_kafka_version == kafka_version:
+            if parcel_kafka_version == args.kafka_version:
                 logger.info('Detected Kafka version matches specified version. Continuing ...')
             else:
                 parcel.deactivate()
@@ -554,7 +574,7 @@ def _configure_kafka(deployment, cluster, kafka_version):
                     raise Exception('Failed to find remote parcel repo URLs configuration.')
                 parcel_repo_urls = config['value']
 
-                kafka_parcel_repo_url = '{}/{}'.format(KAFKA_PARCEL_REPO_URL, kafka_version)
+                kafka_parcel_repo_url = '{}/{}'.format(KAFKA_PARCEL_REPO_URL, args.kafka_version)
                 logger.debug('Adding Kafka parcel repo URL (%s) ...', kafka_parcel_repo_url)
                 deployment.update_cm_config(
                     {'REMOTE_PARCEL_REPO_URLS': '{},{}'.format(parcel_repo_urls,
@@ -566,7 +586,7 @@ def _configure_kafka(deployment, cluster, kafka_version):
                 kafka_parcel = next(parcel
                                     for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels
                                     if parcel.product == 'KAFKA'
-                                    and parcel.version.split('-')[0] == kafka_version)
+                                    and parcel.version.split('-')[0] == args.kafka_version)
                 kafka_parcel.download().distribute().activate()
             # Only one parcel can be activated at a time, so once one is found, our work is done.
             break
@@ -594,6 +614,20 @@ def _configure_kafka(deployment, cluster, kafka_version):
         if role_config_group['roleType'] == 'KAFKA_BROKER':
             logger.debug('Setting Kafka Broker max heap size to 1024 MB ...')
             configs = {'broker_max_heap_size': '1024'}
+            if args.ssl:
+                configs.update({'ssl_enabled': 'true',
+                                'ssl_server_keystore_location': '{}/{}.{}'.format(SSL_SERVER_CONTAINER_DIR,
+                                                                                  'kafka',
+                                                                                  SSL_SERVER_KEYSTORE),
+                                'ssl_server_keystore_password': SSL_SERVER_PASSWORD,
+                                'ssl_server_keystore_keypassword': SSL_SERVER_PASSWORD,
+                                'ssl_client_truststore_location': '{}/{}.{}'.format(SSL_SERVER_CONTAINER_DIR,
+                                                                                    'kafka',
+                                                                                    SSL_SERVER_TRUSTSTORE),
+                                'ssl_client_truststore_password': SSL_SERVER_PASSWORD})
+            if args.ssl == 'authentication':
+                configs.update({'ssl.client.auth': 'required'})
+
             deployment.update_service_role_config_group_config(DEFAULT_CLUSTER_NAME,
                                                                'kafka',
                                                                role_config_group['name'],
@@ -722,6 +756,98 @@ def _configure_kudu(deployment, cluster, kudu_version):
                                                                service['name'],
                                                                role_config_group['name'],
                                                                configs)
+
+
+def _setup_ssl(cluster, service_list, ssl):
+    _setup_ssl_ca_authority(cluster)
+    for service in service_list:
+        if ssl == 'authentication':
+            _setup_ssl_encryption_authentication(cluster, service)
+        else:
+            _setup_ssl_encryption(cluster, service)
+
+
+def _setup_ssl_ca_authority(cluster):
+    ssl_ca_authority_commands = [
+        'mkdir -p {}'.format(SSL_SERVER_CONTAINER_DIR),
+        'mkdir -p {}'.format(SSL_CLIENT_CONTAINER_DIR),
+        'cd {}'.format(SSL_SERVER_CONTAINER_DIR),
+        ('openssl req -new -newkey rsa:4096 -days 365 -x509 -subj "/CN=Kafka-Security-CA"'
+         ' -keyout ca-private-key -out ca-public-key -nodes'),
+    ]
+    cluster.primary_node.execute(' && '.join(ssl_ca_authority_commands))
+
+
+def _setup_ssl_encryption(cluster, service):
+    cur_service = service.lower()
+    service_server_keystore = '{}.{}'.format(cur_service, SSL_SERVER_KEYSTORE)
+    service_server_truststore = '{}.{}'.format(cur_service, SSL_SERVER_TRUSTSTORE)
+
+    # Configuration of server side e.g. for Kafka broker.
+    ssl_server_commands = [
+        'export SRVPASS={}'.format(SSL_SERVER_PASSWORD),
+        # Add JAVA_HOME to PATH to make keytool available.
+        # awk needs single quotes to get the correct value.
+        "export JAVA_HOME=`echo $(awk -F = '/JAVA_HOME/{print $NF}' /etc/default/cloudera-scm-server)`",
+        'export PATH=$PATH:$JAVA_HOME/bin',
+        # Create a broker certificate.
+        'cd {}'.format(SSL_SERVER_CONTAINER_DIR),
+        ('keytool -genkey -keystore {} -validity 365 -storepass $SRVPASS -keypass $SRVPASS -dname "CN=node-1.cluster" '
+         '-storetype pkcs12').format(service_server_keystore),
+        # Sign the broker certificate.
+        ('keytool -keystore {} -certreq -file cert-file -storepass $SRVPASS '
+         '-keypass $SRVPASS').format(service_server_keystore),
+        ('openssl x509 -req -CA ca-public-key -CAkey ca-private-key -in cert-file -out cert-signed '
+         '-days 365 -CAcreateserial -passin pass:$SRVPASS'),
+        # Create a truststore for Kafka broker.
+        ('keytool -keystore {} -alias CARoot -import -file ca-public-key -storepass $SRVPASS '
+         '-keypass $SRVPASS -noprompt').format(service_server_truststore),
+        # Import public certificate and signed certificate to keystore.
+        ('keytool -keystore {} -alias CARoot -import -file ca-public-key -storepass $SRVPASS '
+         '-keypass $SRVPASS -noprompt').format(service_server_keystore),
+        ('keytool -keystore {} -import -file cert-signed -storepass $SRVPASS '
+         '-keypass $SRVPASS -noprompt').format(service_server_keystore)
+    ]
+
+    service_client_truststore = '{}.{}'.format(cur_service, SSL_CLIENT_TRUSTSTORE)
+    # Setup a truststore for Kafka client.
+    ssl_client_commands = [
+        'cd {}'.format(SSL_CLIENT_CONTAINER_DIR),
+        ('keytool -keystore {0} -alias CARoot -import -file {1}/ca-public-key -storepass {2} '
+         '-keypass {2} -noprompt').format(service_client_truststore, SSL_SERVER_CONTAINER_DIR, SSL_CLIENT_PASSWORD)
+    ]
+    ssl_encryption_commands = ssl_server_commands + ssl_client_commands
+    cluster.primary_node.execute(' && '.join(ssl_encryption_commands))
+
+
+def _setup_ssl_encryption_authentication(cluster, service):
+    _setup_ssl_encryption(cluster, service)
+
+    service_client_keystore = '{}.{}'.format(service.lower(), SSL_CLIENT_KEYSTORE)
+
+    ssl_authentication_commands = [
+        'cd {}'.format(SSL_CLIENT_CONTAINER_DIR),
+        'export CLIPASS={}'.format(SSL_CLIENT_PASSWORD),
+        # Add JAVA_HOME to PATH to make keytool available.
+        # awk needs single quotes to get the correct value.
+        "export JAVA_HOME=`echo $(awk -F = '/JAVA_HOME/{print $NF}' /etc/default/cloudera-scm-server)`",
+        'export PATH=$PATH:$JAVA_HOME/bin',
+        # Create a keystore for the client.
+        ('keytool -genkey -keystore {} -validity 365 -storepass $CLIPASS -keypass $CLIPASS -dname "CN=node-1.cluster" '
+         '-alias my-cluster -storetype pkcs12').format(service_client_keystore),
+        # Sign the client certificate.
+        ('keytool -keystore {} -certreq -file client-cert-sign-req -alias my-cluster -storepass $CLIPASS '
+         '-keypass $CLIPASS').format(service_client_keystore),
+        ('openssl x509 -req -CA {0}/ca-public-key -CAkey {0}/ca-private-key -in client-cert-sign-req '
+         '-out client-cert-signed -days 365 -CAcreateserial '
+         '-passin pass:serversecret').format(SSL_SERVER_CONTAINER_DIR),
+        # Add the signed certificate and public key to the client certificate.
+        ('keytool -keystore {} -alias CARoot -import -file {}/ca-public-key -storepass $CLIPASS '
+         '-keypass $CLIPASS -noprompt').format(service_client_keystore, SSL_SERVER_CONTAINER_DIR),
+        ('keytool -keystore {} -import -file client-cert-signed -alias my-cluster -storepass $CLIPASS '
+         '-keypass $CLIPASS -noprompt').format(service_client_keystore)
+    ]
+    cluster.primary_node.execute(' && '.join(ssl_authentication_commands))
 
 
 def _set_cm_server_java_home(node, java_home):

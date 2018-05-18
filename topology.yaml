@@ -77,3 +77,6 @@ start args:
     --spark2-version:
         help: If specified, the version of Spark2 to install from archive.cloudera.com
         metavar: ver
+    --ssl:
+        choices: ['encryption', 'authentication']
+        help: If specified, enable SSL encryption or authentication for one or more cluster services
