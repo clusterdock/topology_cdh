@@ -305,6 +305,9 @@ def main(args):
     if args.spark2_version:
         logger.info('Configuring Spark2 ...')
         _configure_spark2(deployment, cluster, secondary_nodes[0])
+        # Stopping of services after first_run is needed for kerberos to work correctly.
+        logger.info('Stopping cluster services after _configure_spark2 ...')
+        cm_cluster.stop()
 
     if args.kafka_version:
         logger.info('Configuring Kafka ...')
@@ -446,7 +449,6 @@ def _configure_cm_for_kerberos(deployment, cluster, kerberos_ticket_lifetime):
     realm = cluster.network.upper()
     kerberos_config = dict(SECURITY_REALM=realm,
                            KDC_HOST=cluster.kdc_node.fqdn,
-                           KDC_ADMIN_HOST=cluster.kdc_node.fqdn,
                            KRB_MANAGE_KRB5_CONF=True,
                            KRB_ENC_TYPES='aes256-cts-hmac-sha1-96')
     # Suppress CM's warnings for built-in parameter validation for Kerberos ticket lifetime and renewable lifetime.
