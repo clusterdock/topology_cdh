@@ -300,7 +300,7 @@ def main(args):
                                                          service_name=service['name'])
 
     if args.ssl:
-        _setup_ssl(cluster, ['KAFKA'], args.ssl)
+        _setup_ssl(cluster, ['KAFKA'])
 
     if args.spark2_version:
         logger.info('Configuring Spark2 ...')
@@ -760,13 +760,12 @@ def _configure_kudu(deployment, cluster, kudu_version):
                                                                configs)
 
 
-def _setup_ssl(cluster, service_list, ssl):
+def _setup_ssl(cluster, service_list):
     _setup_ssl_ca_authority(cluster)
     for service in service_list:
-        if ssl == 'authentication':
-            _setup_ssl_encryption_authentication(cluster, service)
-        else:
-            _setup_ssl_encryption(cluster, service)
+        # Python kerberos client for Kafka needs files to be generated using kafka.client.keystore.jks
+        # This is generated in authentication setup. Hence call it always.
+        _setup_ssl_encryption_authentication(cluster, service)
 
 
 def _setup_ssl_ca_authority(cluster):
@@ -825,7 +824,8 @@ def _setup_ssl_encryption(cluster, service):
 def _setup_ssl_encryption_authentication(cluster, service):
     _setup_ssl_encryption(cluster, service)
 
-    service_client_keystore = '{}.{}'.format(service.lower(), SSL_CLIENT_KEYSTORE)
+    service_small_case = service.lower()
+    service_client_keystore = '{}.{}'.format(service_small_case, SSL_CLIENT_KEYSTORE)
 
     ssl_authentication_commands = [
         'cd {}'.format(SSL_CLIENT_CONTAINER_DIR),
@@ -849,7 +849,24 @@ def _setup_ssl_encryption_authentication(cluster, service):
         ('keytool -keystore {} -import -file client-cert-signed -alias my-cluster -storepass $CLIPASS '
          '-keypass $CLIPASS -noprompt').format(service_client_keystore)
     ]
-    cluster.primary_node.execute(' && '.join(ssl_authentication_commands))
+
+    # Python Kafka client needs following files to connect with SSL enabled or authenticated Kafka.
+    service_certificate = '{}.certificate.pem'.format(service_small_case)
+    service_cert_and_key_p12 = '{}.cert_and_key.p12'.format(service_small_case)
+    service_key = '{}.key.pem'.format(service_small_case)
+    service_caroot_certificate = '{}.CARoot.pem'.format(service_small_case)
+    ssl_commands = [('keytool -exportcert -alias my-cluster -keystore {} -rfc -file {} '
+                     '-storepass $CLIPASS').format(service_client_keystore, service_certificate),
+                    ('keytool -v -importkeystore -srckeystore {} -srcalias my-cluster -destkeystore {} '
+                     '-deststoretype PKCS12 -deststorepass $CLIPASS '
+                     '-srcstorepass $CLIPASS').format(service_client_keystore, service_cert_and_key_p12),
+                    ('openssl pkcs12 -in {} -nocerts -nodes -password "pass:$CLIPASS" | '
+                     'sed -ne "/-BEGIN PRIVATE KEY-/,/-END PRIVATE KEY-/p" '
+                     '> {}').format(service_cert_and_key_p12, service_key),
+                    ('keytool -exportcert -alias CARoot -keystore {} -rfc '
+                     '-file {} -storepass $CLIPASS').format(service_client_keystore, service_caroot_certificate)]
+
+    cluster.primary_node.execute(' && '.join(ssl_authentication_commands + ssl_commands))
 
 
 def _set_cm_server_java_home(node, java_home):
