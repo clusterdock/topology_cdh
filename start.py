@@ -396,15 +396,15 @@ def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet
         kdc_commands.append('kadmin.local -q '
                             '"xst -norandkey -k {} {}"'.format(KDC_KEYTAB_FILENAME,
                                                                ' '.join(principals)))
-    kdc_commands.extend(['krb5kdc',
-                         'kadmind',
+    kdc_commands.extend(['service krb5kdc start',
+                         'service kadmin start',
                          'authconfig --enablekrb5 --update',
                          'cp -f {} {}'.format(KDC_KRB5_CONF_FILENAME,
                                               KERBEROS_CONFIG_CONTAINER_DIR)])
     if kerberos_principals:
         kdc_commands.append('chmod 644 {}'.format(KDC_KEYTAB_FILENAME))
 
-    kdc_node.execute('&& '.join(kdc_commands),
+    kdc_node.execute(' && '.join(kdc_commands),
                      quiet=quiet)
 
     logger.info('Validating health of Kerberos services ...')
