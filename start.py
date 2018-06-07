@@ -659,6 +659,7 @@ def _install_service_from_local_repo(cluster, product):
 def _configure_spark2(deployment, cluster, history_server_node):
     # The parcel is already present. Hence just distribute and activate it after refresing parcel repos.
     deployment.refresh_parcel_repos()
+    deployment.cluster(DEFAULT_CLUSTER_NAME).wait_for_parcel_stage(product='SPARK2', stage='DOWNLOADED')
     parcel = deployment.cluster(DEFAULT_CLUSTER_NAME).parcel(product='SPARK2', stage='DOWNLOADED')
     parcel.distribute().activate()
 

@@ -125,11 +125,25 @@ class ClouderaManagerCluster:
         if not product and not version and not stage:
             raise Exception('A product and/or version and/or stage must '
                             'be specified to select a parcel.')
-        return next(parcel
+        return next((parcel
                     for parcel in self.parcels
                     if (not product or parcel.product == product)
                     and (not version or parcel.version == version)
-                    and (not stage or parcel.stage == stage))
+                    and (not stage or parcel.stage == stage)), None)
+
+    def wait_for_parcel_stage(self, product, version=None, stage=None):
+        def condition(product, version, stage):
+            parcel = self.parcel(product=product, version=version, stage=stage)
+            return parcel is not None
+
+        def success(time):
+            logger.debug('%s parcel with %s version found in %s stage after %s seconds.', product, version, stage, time)
+
+        def failure(timeout):
+            raise TimeoutError('Timed out after {} seconds waiting for {} parcel with {} version'
+                               ' in the {} stage.'.format(timeout, product, version, stage))
+        wait_for_condition(condition=condition, condition_args=[product, version, stage],
+                           time_between_checks=3, timeout=180, success=success, failure=failure)
 
     def deploy_client_config(self):
         command_id = self.api_client.deploy_cluster_client_config(cluster_name=self.name)['id']
