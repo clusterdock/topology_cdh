@@ -324,9 +324,9 @@ def main(args):
         # The parcel is already present. Hence just distribute and activate it after refresing parcel repos.
         product = 'STREAMSETS_DATACOLLECTOR'
         deployment.refresh_parcel_repos()
-        deployment.cluster(DEFAULT_CLUSTER_NAME).parcels
         # Remove RC from version.
         version = args.sdc_version.rsplit('-RC')[0]
+        cm_cluster.wait_for_parcel_stage(product=product, version=version, stage='DOWNLOADED')
         sdc_parcel = cm_cluster.parcel(product=product, version=version, stage='DOWNLOADED')
         sdc_parcel.distribute().activate()
 
