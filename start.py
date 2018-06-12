@@ -18,7 +18,6 @@ import socket
 
 from configobj import ConfigObj
 
-from clusterdock.config import CLUSTERDOCK_CONFIG_DIRECTORY
 from clusterdock.models import Cluster, client, Node
 from clusterdock.utils import nested_get, wait_for_condition
 
@@ -41,12 +40,12 @@ CLUSTERDOCK_PARCEL_REPO_DIRECTORY = '/opt/clusterdock/parcel-repo'
 DEFAULT_CLUSTER_NAME = 'cluster'
 SECONDARY_NODE_TEMPLATE_NAME = 'Secondary'
 
-KERBEROS_CONFIG_CONTAINER_DIR = '/etc/clusterdock/kerberos'
+KERBEROS_CONFIG_KDC_CONTAINER_DIR = '/etc/clusterdock/client/kerberos'
 KDC_HOSTNAME = 'kdc'
 KDC_IMAGE = 'clusterdock/topology_nodebase_kerberos:centos6.6'
 KDC_ACL_FILENAME = '/var/kerberos/krb5kdc/kadm5.acl'
 KDC_CONF_FILENAME = '/var/kerberos/krb5kdc/kdc.conf'
-KDC_KEYTAB_FILENAME = '{}/clusterdock.keytab'.format(KERBEROS_CONFIG_CONTAINER_DIR)
+KDC_KEYTAB_FILENAME = '{}/clusterdock.keytab'.format(KERBEROS_CONFIG_KDC_CONTAINER_DIR)
 KDC_KRB5_CONF_FILENAME = '/etc/krb5.conf'
 LINUX_USER_ID_START = 1000
 
@@ -95,7 +94,8 @@ def main(args):
     ports = [{CM_PORT: CM_PORT} if args.predictable else CM_PORT,
              {HUE_PORT: HUE_PORT} if args.predictable else HUE_PORT]
 
-    volumes = [{CLUSTERDOCK_CONFIG_DIRECTORY: CLUSTERDOCK_CLIENT_CONTAINER_DIR}]
+    clusterdock_config_host_dir = os.path.realpath(os.path.expanduser(args.clusterdock_config_directory))
+    volumes = [{clusterdock_config_host_dir: CLUSTERDOCK_CLIENT_CONTAINER_DIR}]
     primary_node = Node(hostname=args.primary_node[0], group='primary',
                         image=primary_node_image, ports=ports,
                         healthcheck=cm_server_healthcheck,
@@ -120,8 +120,9 @@ def main(args):
             node.volumes.append(spark2_parcel_image)
 
     if args.kerberos:
-        kerberos_config_host_dir = os.path.expanduser(args.kerberos_config_directory)
-        volumes = [{kerberos_config_host_dir: KERBEROS_CONFIG_CONTAINER_DIR}]
+        dir = '{}/kerberos'.format(args.clusterdock_config_directory)
+        kerberos_config_host_dir = os.path.realpath(os.path.expanduser(dir))
+        volumes = [{kerberos_config_host_dir: KERBEROS_CONFIG_KDC_CONTAINER_DIR}]
         for node in nodes:
             node.volumes.extend(volumes)
 
@@ -400,7 +401,7 @@ def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet
                          'service kadmin start',
                          'authconfig --enablekrb5 --update',
                          'cp -f {} {}'.format(KDC_KRB5_CONF_FILENAME,
-                                              KERBEROS_CONFIG_CONTAINER_DIR)])
+                                              KERBEROS_CONFIG_KDC_CONTAINER_DIR)])
     if kerberos_principals:
         kdc_commands.append('chmod 644 {}'.format(KDC_KEYTAB_FILENAME))
 

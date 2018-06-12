@@ -57,10 +57,6 @@ start args:
     --kerberos, -k:
         action: store_true
         help: If specified, enable Kerberos for the cluster
-    --kerberos-config-directory:
-        default: ~/.clusterdock/kerberos
-        help: Mounts this directory to KDC container for Kerberos config files
-        metavar: path
     --kerberos-principals:
         help: If specified, a comma-separated list of Kerberos user principals to create in KDC
         metavar: princ1,princ2,...
