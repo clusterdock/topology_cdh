@@ -341,6 +341,12 @@ def main(args):
         logger.info('Validating service health ...')
         _validate_service_health(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
 
+        logger.info('Configuring after start of cluster ...')
+        _configure_after_start(deployment=deployment,
+                               cluster_name=DEFAULT_CLUSTER_NAME,
+                               cluster=cluster, quiet=not args.verbose,
+                               kerberos_principals=args.kerberos_principals)
+
 
 def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
     kdc_node = cluster.kdc_node
@@ -1063,3 +1069,26 @@ def _validate_service_health(deployment, cluster_name):
     wait_for_condition(condition=condition, condition_args=[deployment, cluster_name],
                        time_between_checks=3, timeout=600, time_to_success=30,
                        success=success, failure=failure)
+
+
+def _execute_commands_against_kerberized_hdfs(cluster, commands, quiet):
+    hdfs_principal = 'hdfs/{hdfs_node_name}@{realm}'.format(hdfs_node_name=cluster.primary_node.fqdn,
+                                                            realm=cluster.network.upper())
+    kinit_command = [('kinit -k -t "$(find /var/run/cloudera-scm-agent/process/*hdfs-NAMENODE '
+                      '-maxdepth 0 -mindepth 0 | sort -rs | head -1)/hdfs.keytab" {}').format(hdfs_principal)]
+    kdestroy_command = ['kdestroy']
+    cluster.primary_node.execute(' && '.join(kinit_command + commands + kdestroy_command), quiet=quiet)
+
+
+def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_principals):
+    # To contact kerberized HDFS using keytab of any of the Kerberos principals,
+    # for each Kerberos principal there needs to be HDFS /user/{principal} directory.
+    if kerberos_principals:
+        cluster_service_types = {service['type']
+                                 for service
+                                 in deployment.get_cluster_services(cluster_name)}
+
+        if 'HDFS' in cluster_service_types:
+            dir_command = 'hadoop fs -mkdir /user/{0} && hadoop fs -chown {0}:{0} /user/{0}'
+            dir_commands = [dir_command.format(primary) for primary in kerberos_principals.split(',')]
+            _execute_commands_against_kerberized_hdfs(cluster, dir_commands, quiet)
