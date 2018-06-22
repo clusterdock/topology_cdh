@@ -586,6 +586,37 @@ class ApiClient:
         return self._get(endpoint='{}/commands/{}'.format(self.api_version,
                                                           command_id)).json()
 
+    def inspect_hosts(self, cluster_name):
+        """Inspect hosts in the cluster.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint='{}/clusters/{}/commands/inspectHosts'.format(self.api_version,
+                                                                                 cluster_name)).json()
+
+    def list_all_clusters(self):
+        """List clusters.
+
+        Returns:
+            A list of the clusters.
+        """
+        return self._get(endpoint='{}/clusters'.format(self.api_version)).json()
+
+    def download_command_output(self, command_id):
+        """Return the output of download of the command.
+
+        Args:
+            command_id (:obj:`str`): The command ID.
+
+        Returns:
+            Contents of the download.
+        """
+        return self._get(endpoint='/command/{}/download'.format(command_id),  endpoint_suffix='/cmf').json()
+
     def _get_api_version(self):
         api_version = self._get(endpoint='/version').text
         if not api_version.startswith('v'):
@@ -594,8 +625,8 @@ class ApiClient:
             logger.info('Detected CM API %s.', api_version)
             return api_version
 
-    def _get(self, endpoint, params=None):
-        url = join_url_parts(self.server_url, '/api', endpoint)
+    def _get(self, endpoint, endpoint_suffix='/api', params=None):
+        url = join_url_parts(self.server_url, endpoint_suffix, endpoint)
         logger.debug('Sending GET request to URL (%s) with parameters (%s) ...',
                      url,
                      params or 'None')

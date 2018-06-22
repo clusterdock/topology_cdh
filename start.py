@@ -49,12 +49,15 @@ KDC_KEYTAB_FILENAME = '{}/clusterdock.keytab'.format(KERBEROS_CONFIG_CONTAINER_D
 KDC_KRB5_CONF_FILENAME = '/etc/krb5.conf'
 LINUX_USER_ID_START = 1000
 
+EARLIEST_CDH_VERSION_WITH_KUDU = (5, 13, 0)
 KUDU_PARCEL_VERSION_REGEX = r'(.*)-.*\.cdh(.*)\.p'
 KAFKA_PARCEL_REPO_URL = 'https://archive.cloudera.com/kafka/parcels'
 KUDU_PARCEL_REPO_URL = 'https://archive.cloudera.com/kudu/parcels'
 KUDU_PARCEL_VERSIONS = {'1.2.0': '5.10.0',
                         '1.3.0': '5.11.0',
                         '1.4.0': '5.12.0'}
+SERVICE_PARCEL_REPO_URLS = {'KAFKA': KAFKA_PARCEL_REPO_URL,
+                            'KUDU': KUDU_PARCEL_REPO_URL}
 
 # Files placed in this directory on primary_node are available
 # in clusterdock_config_directory after cluster is started.
@@ -312,11 +315,13 @@ def main(args):
 
     if args.kafka_version:
         logger.info('Configuring Kafka ...')
-        _configure_kafka(deployment, cluster, args)
+        _configure_kafka(deployment, cluster, args.kafka_version, args.ssl)
 
     if args.kudu_version:
+        logger.info('Validating Kudu ...')
+        _validate_kudu_version(args.kudu_version, args.cdh_version, cm_cluster)
         logger.info('Configuring Kudu ...')
-        _configure_kudu(deployment, cluster, kudu_version=args.kudu_version)
+        _configure_kudu(deployment, cluster, kudu_version=args.kudu_version, cdh_version=args.cdh_version)
 
     if args.kerberos:
         logger.info('Configure Cloudera Manager for Kerberos ...')
@@ -565,40 +570,48 @@ def _command_condition(deployment, command_id, command_description):
     return not active and success
 
 
-# TODO: Get rid of the excess amount of code duplication between the following
-# function and _configure_kudu.
-def _configure_kafka(deployment, cluster, args):
+def _deactivate_service_parcel(deployment, cluster, product, version):
     for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
-        if parcel.product == 'KAFKA' and parcel.stage in 'ACTIVATED':
-            parcel_kafka_version = parcel.version.split('-')[0]
-            if parcel_kafka_version == args.kafka_version:
-                logger.info('Detected Kafka version matches specified version. Continuing ...')
+        if parcel.product == product and parcel.stage in 'ACTIVATED':
+            parcel_version = parcel.version.split('-')[0]
+            if parcel_version == version:
+                logger.info('Detected parcel version matches specified version. Continuing ...')
             else:
                 parcel.deactivate()
-
-                for config in deployment.get_cm_config():
-                    if config['name'] == 'REMOTE_PARCEL_REPO_URLS':
-                        break
-                else:
-                    raise Exception('Failed to find remote parcel repo URLs configuration.')
-                parcel_repo_urls = config['value']
-
-                kafka_parcel_repo_url = '{}/{}'.format(KAFKA_PARCEL_REPO_URL, args.kafka_version)
-                logger.debug('Adding Kafka parcel repo URL (%s) ...', kafka_parcel_repo_url)
-                deployment.update_cm_config(
-                    {'REMOTE_PARCEL_REPO_URLS': '{},{}'.format(parcel_repo_urls,
-                                                               kafka_parcel_repo_url)}
-                )
-
-                logger.debug('Refreshing parcel repos ...')
-                deployment.refresh_parcel_repos()
-                kafka_parcel = next(parcel
-                                    for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels
-                                    if parcel.product == 'KAFKA'
-                                    and parcel.version.split('-')[0] == args.kafka_version)
-                kafka_parcel.download().distribute().activate()
             # Only one parcel can be activated at a time, so once one is found, our work is done.
             break
+
+
+def _install_parcel_from_remote_repo(deployment, product, version, parcel_repo_version=None):
+    for config in deployment.get_cm_config():
+        if config['name'] == 'REMOTE_PARCEL_REPO_URLS':
+            break
+    else:
+        raise Exception('Failed to find remote parcel repo URLs configuration.')
+    parcel_repo_urls = config['value']
+
+    service_parcel_repo_url = '{}/{}'.format(SERVICE_PARCEL_REPO_URLS[product],
+                                             parcel_repo_version if parcel_repo_version is not None else version)
+    logger.debug('Adding parcel repo URL (%s) ...', service_parcel_repo_url)
+    deployment.update_cm_config(
+        {'REMOTE_PARCEL_REPO_URLS': '{},{}'.format(parcel_repo_urls,
+                                                   service_parcel_repo_url)}
+    )
+
+    logger.debug('Refreshing parcel repos ...')
+    deployment.refresh_parcel_repos()
+    deployment.cluster(DEFAULT_CLUSTER_NAME).wait_for_parcel_stage(product=product, version=version)
+    service_parcel = deployment.cluster(DEFAULT_CLUSTER_NAME).parcel(product=product, version=version)
+    service_parcel.download().distribute().activate()
+
+
+def _configure_kafka(deployment, cluster, kafka_version, ssl):
+    _deactivate_service_parcel(deployment, cluster, 'KAFKA', kafka_version)
+    for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
+        if parcel.product == 'KAFKA' and parcel.stage in 'ACTIVATED':
+            break
+    else:
+        _install_parcel_from_remote_repo(deployment, 'KAFKA', kafka_version)
 
     logger.info('Adding Kafka service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     broker_role = {'type': 'KAFKA_BROKER',
@@ -623,7 +636,7 @@ def _configure_kafka(deployment, cluster, args):
         if role_config_group['roleType'] == 'KAFKA_BROKER':
             logger.debug('Setting Kafka Broker max heap size to 1024 MB ...')
             configs = {'broker_max_heap_size': '1024'}
-            if args.ssl:
+            if ssl:
                 configs.update({'ssl_enabled': 'true',
                                 'ssl_server_keystore_location': '{}/{}.{}'.format(SSL_SERVER_CONTAINER_DIR,
                                                                                   'kafka',
@@ -634,7 +647,7 @@ def _configure_kafka(deployment, cluster, args):
                                                                                     'kafka',
                                                                                     SSL_SERVER_TRUSTSTORE),
                                 'ssl_client_truststore_password': SSL_SERVER_PASSWORD})
-            if args.ssl == 'authentication':
+            if ssl == 'authentication':
                 configs.update({'ssl.client.auth': 'required'})
 
             deployment.update_service_role_config_group_config(DEFAULT_CLUSTER_NAME,
@@ -689,7 +702,7 @@ def _configure_spark2(deployment, cluster, history_server_node):
     deployment.first_run_service(DEFAULT_CLUSTER_NAME, service_name, 300)
 
 
-def _configure_kudu(deployment, cluster, kudu_version):
+def _install_kudu(deployment, kudu_version):
     for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
         if parcel.product == 'KUDU' and parcel.stage in 'ACTIVATED':
             parcel_kudu_version = re.match(KUDU_PARCEL_VERSION_REGEX, parcel.version).group(1)
@@ -722,6 +735,44 @@ def _configure_kudu(deployment, cluster, kudu_version):
                 kudu_parcel.download().distribute().activate()
             # Only one parcel can be activated at a time, so once one is found, our work is done.
             break
+
+
+def _validate_kudu_version(kudu_version, cdh_version, cm_cluster):
+    cdh_version_tuple = tuple(int(i) for i in cdh_version.split('.'))
+
+    if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_KUDU:
+        cdh_version_from_map = KUDU_PARCEL_VERSIONS.get(kudu_version)
+        if cdh_version_from_map is None:
+            raise Exception('Kudu version {} is not available for '
+                            'CDH {} Aborting ...'.format(kudu_version, cdh_version))
+    else:
+        # For CDH 5.13.0 and above, Kudu is integrated in CDH and only the integrated version can be installed.
+        # Hence check if the parameter Kudu version matches integrated Kudu version for the specific CDH version.
+        cluster_info = cm_cluster.get_cluster_info()
+        if cluster_info is not None:
+            cluster_display_name = cluster_info['displayName']
+            inspect_hosts_contents = cm_cluster.download_command_output(cm_cluster.inspect_hosts())
+            for item in inspect_hosts_contents['componentSetByCluster'][cluster_display_name][0]['componentInfo']:
+                if item['name'] == 'kudu':
+                    break
+            else:
+                raise Exception('Integrated Kudu version for CDH {} not found.'.format(cdh_version))
+            cluster_kudu_version = item['componentVersion'].split('+')[0]
+        if kudu_version != cluster_kudu_version:
+            raise Exception('Kudu version {} does not match integrated Kudu version {} for '
+                            'CDH {} Aborting ...'.format(kudu_version, cluster_kudu_version, cdh_version))
+
+
+def _configure_kudu(deployment, cluster, kudu_version, cdh_version):
+    cdh_version_tuple = tuple(int(i) for i in cdh_version.split('.'))
+
+    if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_KUDU:
+        _deactivate_service_parcel(deployment, cluster, 'KUDU', kudu_version)
+        for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
+            if parcel.product == 'KUDU' and parcel.stage in 'ACTIVATED':
+                break
+        else:
+            _install_parcel_from_remote_repo(deployment, 'KUDU', kudu_version, KUDU_PARCEL_VERSIONS[kudu_version])
 
     logger.info('Adding Kudu service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     master_role = {'type': 'KUDU_MASTER',

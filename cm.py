@@ -128,7 +128,7 @@ class ClouderaManagerCluster:
         return next((parcel
                     for parcel in self.parcels
                     if (not product or parcel.product == product)
-                    and (not version or parcel.version == version)
+                    and (not version or parcel.version.split('-')[0] == version)
                     and (not stage or parcel.stage == stage)), None)
 
     def wait_for_parcel_stage(self, product, version=None, stage=None):
@@ -203,6 +203,19 @@ class ClouderaManagerCluster:
                 command_id = self.api_client.stop_all_cluster_services(cluster_name=self.name)['id']
                 _wait_for_command(self, command_id)
                 break
+
+    def inspect_hosts(self):
+        command_id = self.api_client.inspect_hosts(cluster_name=self.name)['id']
+        _wait_for_command(self, command_id)
+        return command_id
+
+    def download_command_output(self, command_id):
+        return self.api_client.download_command_output(command_id)
+
+    def get_cluster_info(self):
+        items = self.api_client.list_all_clusters()['items']
+        logger.info(items)
+        return next((item for item in items if item['name'] == self.name), None)
 
 
 class ClouderaManagerDeployment:
