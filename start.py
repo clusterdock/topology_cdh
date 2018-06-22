@@ -437,7 +437,8 @@ def main(args):
 
         _configure_for_streamsets_after_start(deployment=deployment,
                                               cluster_name=DEFAULT_CLUSTER_NAME,
-                                              cluster=cluster, quiet=not args.verbose)
+                                              cluster=cluster, quiet=not args.verbose,
+                                              kerberos_enabled=args.kerberos)
 
 def _is_service_to_add(service_type, include_services, exclude_services):
     if include_services:
@@ -1417,7 +1418,7 @@ def _configure_yarn(deployment, cluster, cluster_name):
                                                                configs)
 
 
-def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, quiet):
+def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, quiet, kerberos_enabled):
     # Following is needed for Kerberos and Kafka to work correctly.
     logger.info('Copying streamsets keytab to a fixed location which is shared on all clustered nodes ...')
     commands = [('cp "$(find /var/run/cloudera-scm-agent/process/*streamsets-DATACOLLECTOR -maxdepth 0 -mindepth 0 | '
@@ -1434,14 +1435,27 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
         SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
 
         logger.info('Creating sample schemaless collection for Solr ...')
-        cluster.primary_node.execute('solrctl instancedir --generate '
-                                     '/root/sample_collection_solr_configs -schemaless', quiet=quiet)
-        solr_config = cluster.primary_node.get_file(SOLR_CONFIG_FILE_PATH)
-        cluster.primary_node.put_file(SOLR_CONFIG_FILE_PATH,
-                                      re.sub(r'<!--<(str name="df")>text<(/str)>-->',
-                                             r'<\1>id<\2>',
-                                             solr_config))
-        cluster.primary_node.execute('solrctl instancedir --create sample_collection '
-                                     '/root/sample_collection_solr_configs', quiet=quiet)
-        cluster.primary_node.execute('solrctl collection --create sample_collection '
-                                     '-s 1 -c sample_collection', quiet=quiet)
+        primary_node = cluster.primary_node
+
+        primary_node.execute('solrctl instancedir --generate '
+                             '/root/sample_collection_solr_configs -schemaless', quiet=quiet)
+        solr_config = primary_node.get_file(SOLR_CONFIG_FILE_PATH)
+        primary_node.put_file(SOLR_CONFIG_FILE_PATH,
+                              re.sub(r'<!--<(str name="df")>text<(/str)>-->',
+                                     r'<\1>id<\2>',
+                                     solr_config))
+        primary_node.execute('solrctl instancedir --create sample_collection '
+                             '/root/sample_collection_solr_configs', quiet=quiet)
+        if kerberos_enabled:
+            # kinit with solr.keytab
+            solr_principal = 'solr/{solr_node_name}@{realm}'.format(solr_node_name=primary_node.fqdn,
+                                                                    realm=cluster.network.upper())
+            kinit_command = ('kinit -k -t "$(find /var/run/cloudera-scm-agent/process/*solr-SOLR_SERVER '
+                             '-maxdepth 0 -mindepth 0 | sort -rs | head -1)/solr.keytab" {}').format(solr_principal)
+            primary_node.execute(kinit_command)
+
+        primary_node.execute('solrctl collection --create sample_collection '
+                             '-s 1 -c sample_collection', quiet=quiet)
+
+        if kerberos_enabled:
+            primary_node.execute('kdestroy')
