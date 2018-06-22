@@ -438,7 +438,8 @@ def main(args):
         _configure_for_streamsets_after_start(deployment=deployment,
                                               cluster_name=DEFAULT_CLUSTER_NAME,
                                               cluster=cluster, quiet=not args.verbose,
-                                              kerberos_enabled=args.kerberos)
+                                              kerberos_enabled=args.kerberos,
+                                              kerberos_principals=args.kerberos_principals)
 
 def _is_service_to_add(service_type, include_services, exclude_services):
     if include_services:
@@ -1418,7 +1419,8 @@ def _configure_yarn(deployment, cluster, cluster_name):
                                                                configs)
 
 
-def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, quiet, kerberos_enabled):
+def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, quiet,
+                                          kerberos_enabled, kerberos_principals):
     # Following is needed for Kerberos and Kafka to work correctly.
     logger.info('Copying streamsets keytab to a fixed location which is shared on all clustered nodes ...')
     commands = [('cp "$(find /var/run/cloudera-scm-agent/process/*streamsets-DATACOLLECTOR -maxdepth 0 -mindepth 0 | '
@@ -1430,6 +1432,14 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
     cluster_service_types = {service['type']
                              for service
                              in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME)}
+
+    if 'HDFS' in cluster_service_types and kerberos_principals:
+        if 'sdctest' in kerberos_principals.split(','):
+            # Following is needed as tests use HDFS directory /tmp/out.
+            commands = ['hadoop fs -mkdir /tmp/out',
+                        'hadoop fs -chown sdctest /tmp/out',
+                        'hadoop fs -chmod 1777 /tmp/out']
+        _execute_commands_against_kerberized_hdfs(cluster, commands, quiet)
 
     if 'SOLR' in cluster_service_types:
         SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
