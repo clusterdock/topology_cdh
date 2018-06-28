@@ -58,7 +58,9 @@ def main():
         logger.info('Doing dry-run of tool ...')
 
     sdc_version = _get_sdc_version(PARCEL_MANIFEST_URL_TEMPLATE.format(build=args.sdc_build, s3_bucket=args.sdc_s3_bucket))
-    image_name = IMAGE_NAME_TEMPLATE.format(args.sdc_version_tag or sdc_version)
+    tag_version = args.sdc_version_tag or sdc_version
+    image_name = IMAGE_NAME_TEMPLATE.format(tag_version)
+    tag = IMAGE_NAME_TEMPLATE.format('{}-latest'.format(tag_version.split('-')[0]))
     csd_url = CSD_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
     parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
 
@@ -72,11 +74,17 @@ def main():
     if not args.dry_run:
         subprocess.run(cmd, shell=True, check=True)
 
+    cmd = 'docker tag {} {}'.format(image_name, tag)
+    logger.debug('Running Docker tag command (%s)...', cmd)
+    if not args.dry_run:
+        subprocess.run(cmd, shell=True, check=True)
+
     if args.push:
-        cmd = 'docker push {}'.format(image_name)
-        logger.debug('Running Docker push command (%s) ...', cmd)
-        if not args.dry_run:
-            subprocess.run(cmd, shell=True, check=True)
+        for item in [image_name, tag]:
+            cmd = 'docker push {}'.format(item)
+            logger.debug('Running Docker push command (%s) ...', cmd)
+            if not args.dry_run:
+                subprocess.run(cmd, shell=True, check=True)
 
 
 def _get_sdc_version(url):
