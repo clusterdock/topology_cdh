@@ -83,6 +83,7 @@ def main(args):
                                                          args.cm_version)
     primary_node_image = '{}_{}'.format(image_prefix, 'primary-node')
     secondary_node_image = '{}_{}'.format(image_prefix, 'secondary-node')
+    single_node_image = '{}_{}'.format(image_prefix, 'single-node')
 
     # Docker's API for healthcheck uses units of nanoseconds. Define a constant
     # to make this more readable.
@@ -100,12 +101,13 @@ def main(args):
     clusterdock_config_host_dir = os.path.realpath(os.path.expanduser(args.clusterdock_config_directory))
     volumes = [{clusterdock_config_host_dir: CLUSTERDOCK_CLIENT_CONTAINER_DIR}]
     primary_node = Node(hostname=args.primary_node[0], group='primary',
-                        image=primary_node_image, ports=ports,
+                        image=primary_node_image if not args.single_node else single_node_image,
+                        ports=ports,
                         healthcheck=cm_server_healthcheck,
                         volumes=volumes)
     secondary_nodes = [Node(hostname=hostname, group='secondary', image=secondary_node_image, volumes=volumes)
                        for hostname in args.secondary_nodes]
-    nodes = [primary_node] + secondary_nodes
+    nodes = [primary_node] + secondary_nodes if not args.single_node else [primary_node]
 
     if args.java:
         java_image = '{}/{}/clusterdock:cdh_{}'.format(args.registry,
@@ -195,7 +197,10 @@ def main(args):
 
     # Docker for Mac exposes ports that can be accessed only with ``localhost:<port>`` so
     # use that instead of the hostname if the host name is ``moby``.
-    hostname = 'localhost' if client.info().get('Name') == 'moby' else socket.gethostname()
+    if any(docker_for_mac_name in client.info().get('Name', '') for docker_for_mac_name in ['moby', 'linuxkit']):
+        hostname = 'localhost'
+    else:
+        hostname = socket.gethostbyname(socket.gethostname())
     port = primary_node.host_ports.get(CM_PORT)
     server_url = 'http://{}:{}'.format(hostname, port)
     logger.info('Cloudera Manager server is now reachable at %s', server_url)
