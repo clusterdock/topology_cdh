@@ -1153,6 +1153,10 @@ def _configure_sdc(deployment, cluster, args):
         opts = '-Djava.security.auth.login.config={0} -Dsun.security.krb5.debug=true'.format(JAAS_CONFIG_FILE_PATH)
         configs['java.opts'] = opts
 
+    # Increase the maximum number of stage libraries SDC allows.
+    # This avoids errors of the sort 'classloader pool exhausted' when huge number of tests are run.
+    configs['max.stage.private.classloaders'] = 1000
+
     for role_config_group in deployment.get_service_role_config_groups(DEFAULT_CLUSTER_NAME,
                                                                        'streamsets'):
         deployment.update_service_role_config_group_config(DEFAULT_CLUSTER_NAME,
