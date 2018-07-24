@@ -626,14 +626,18 @@ def _configure_kafka(deployment, cluster, kafka_version, ssl):
             break
     else:
         raise Exception('Could not find ZooKeeper service on cluster %s.', DEFAULT_CLUSTER_NAME)
+
+    # Replication factor needs to be set to 1 for CDH Kafka 3.0.0 onwards
+    # when Default Number of partitions = 1 (which is default).
+    # Also changing replication factor to 1 works with CDH Kafka < 3.0.0.
     deployment.create_cluster_services(
         cluster_name=DEFAULT_CLUSTER_NAME,
         services=[{'name': 'kafka',
                    'type': 'KAFKA',
                    'displayName': 'Kafka',
                    'roles': [broker_role],
-                   'config': {'items': [{'name': 'zookeeper_service',
-                                         'value': service['name']}]}}]
+                   'config': {'items': [{'name': 'zookeeper_service', 'value': service['name']},
+                                        {'name': 'offsets.topic.replication.factor', 'value': 1}]}}]
     )
 
     for role_config_group in deployment.get_service_role_config_groups(DEFAULT_CLUSTER_NAME,
