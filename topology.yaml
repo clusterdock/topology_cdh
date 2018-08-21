@@ -79,6 +79,9 @@ start args:
     --sdc-version:
         help: If specified, the version of StreamSets Data Collector to install
         metavar: ver
+    --sdc-resources-directory:
+        help: If specified, a directory containing resources files to mount into the StreamSets Data Collector resources
+        metavar: dir
     --single-node:
         action: store_true
         help: If specified, a single-node deployment will be started

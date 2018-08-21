@@ -92,6 +92,7 @@ DB_MGMT_PROPERTIES_FILENAME = '/etc/cloudera-scm-server/db.mgmt.properties'
 EARLIEST_CDH_VERSION_WITH_NO_REPORTS_MANAGER_NEEDED = (5, 14, 0)
 NAVIGATOR_POSTGRESQL_PORT = 7432
 SDC_PORT = 18630
+SDC_RESOURCES_DIRECTORY = '/var/lib/sdc/resources'  # Default path for $SDC_RESOURCES.
 
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
@@ -168,6 +169,16 @@ def main(args):
         logger.debug('Adding SDC parcel image %s to CM nodes ...', sdc_parcel_image)
         for node in nodes:
             node.volumes.append(sdc_parcel_image)
+
+        # Volume mount SDC resources.
+        # e.g. If /home/ubuntu/protobuf is passed, then it gets mounted to SDC_RESOURCES_DIRECTORY/protobuf on SDC node
+        if args.sdc_resources_directory:
+            sdc_resources_directory_path = os.path.realpath(os.path.expanduser(args.sdc_resources_directory))
+            sdc_resources_basename = os.path.basename(sdc_resources_directory_path)
+            sdc_resources_mount_point = '{}/{}'.format(SDC_RESOURCES_DIRECTORY, sdc_resources_basename)
+            logger.debug('Volume mounting resources from %s to %s ...',
+                         sdc_resources_directory_path, sdc_resources_mount_point)
+            primary_node.volumes.append({sdc_resources_directory_path: sdc_resources_mount_point})
 
     if args.kerberos:
         dir = '{}/kerberos'.format(args.clusterdock_config_directory)
@@ -409,7 +420,8 @@ def main(args):
         logger.info('Configure Cloudera Manager for Kerberos ...')
         _configure_cm_for_kerberos(deployment, cluster, args.kerberos_ticket_lifetime)
 
-    _configure_for_streamsets_before_start(deployment, cluster_name=DEFAULT_CLUSTER_NAME)
+    _configure_for_streamsets_before_start(deployment, cluster, cluster_name=DEFAULT_CLUSTER_NAME,
+                                           sdc_resources_directory=args.sdc_resources_directory)
     logger.info('Deploying client config ...')
     cm_cluster.deploy_client_config()
 
@@ -1388,7 +1400,11 @@ def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_pr
             _execute_commands_against_kerberized_hdfs(cluster, dir_commands, quiet)
 
 
-def _configure_for_streamsets_before_start(deployment, cluster_name):
+def _configure_for_streamsets_before_start(deployment, cluster, cluster_name, sdc_resources_directory):
+    if sdc_resources_directory:
+        logger.info('Setting correct permissions for sdc resources recursively ...')
+        cluster.primary_node.execute('chown -R sdc:sdc {}'.format(os.path.dirname(SDC_RESOURCES_DIRECTORY)))
+
     logger.info('Adding HDFS proxy user ...')
     for service in deployment.get_cluster_services(cluster_name=cluster_name):
         if service['type'] == 'HDFS':
