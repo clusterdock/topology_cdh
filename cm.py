@@ -508,6 +508,24 @@ class ClouderaManagerDeployment:
         }
         return self.api_client.update_cm_config(config_list=config_list)['items']
 
+    def create_cm_roles(self, roles):
+        """Create Cloudera Manager roles.
+
+        Args:
+            roles (:obj:`list`): A list of API role dictionaries to create.
+
+        Returns:
+            A list (role list) of the created Cloudera Manager roles.
+        """
+        role_list = {'items': roles}
+        return self.api_client.create_cm_roles(role_list)['items']
+
+    def begin_trial(self):
+        """Begin the trial license for this Cloudera Manager instance.
+        This allows the user to have enterprise-level features for a 60-day trial period.
+        """
+        self.api_client.begin_trial()
+
     def create_host_template(self, host_template_name, cluster_name, role_config_group_names):
         """Create a new host template.
 
@@ -556,6 +574,16 @@ class ClouderaManagerDeployment:
     def first_run_service(self, cluster_name, service_name, timeout=180):
         command_id = self.api_client.first_run_cluster_service(cluster_name=cluster_name,
                                                                service_name=service_name)['id']
+        _wait_for_command(self, command_id, timeout)
+
+    def restart_service(self, cluster_name, service_name, timeout=180):
+        command_id = self.api_client.restart_cluster_service(cluster_name=cluster_name,
+                                                             service_name=service_name)['id']
+        _wait_for_command(self, command_id, timeout)
+
+    def start_service(self, cluster_name, service_name, timeout=180):
+        command_id = self.api_client.start_cluster_service(cluster_name=cluster_name,
+                                                           service_name=service_name)['id']
         _wait_for_command(self, command_id, timeout)
 
 

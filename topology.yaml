@@ -67,6 +67,9 @@ start args:
     --kudu-version:
         help: If specified, the version of Kudu to install from archive.cloudera.com
         metavar: ver
+    --navigator:
+        action: store_true
+        help: If specified, enable Cloudera Navigator for the cluster
     --predictable:
         action: store_true
         help: If specified, attempt to expose container ports to the same port number on the host

@@ -396,6 +396,36 @@ class ApiClient:
                                                                 cluster_name,
                                                                 service_name)).json()
 
+    def restart_cluster_service(self, cluster_name, service_name):
+        """Restart a cluster service.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the service.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/services/{}/'
+                                    'commands/restart').format(self.api_version,
+                                                               cluster_name,
+                                                               service_name)).json()
+
+    def start_cluster_service(self, cluster_name, service_name):
+        """Start a cluster service.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the service.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/services/{}/'
+                                    'commands/start').format(self.api_version,
+                                                             cluster_name,
+                                                             service_name)).json()
+
     def update_all_hosts_config(self, config_list):
         """Update the default configuration values for all hosts.
 
@@ -573,6 +603,24 @@ class ApiClient:
             A dictionary (command) of the submitted command.
         """
         return self._post(endpoint='{}/cm/service/commands/start'.format(self.api_version)).json()
+
+    def begin_trial(self):
+        """Begin the trial license for this Cloudera Manager instance.
+        This allows the user to have enterprise-level features for a 60-day trial period.
+        """
+        self._post(endpoint='{}/cm/trial/begin'.format(self.api_version))
+
+    def create_cm_roles(self, role_list):
+        """Create Cloudera Manager roles.
+
+        Args:
+            role_list (:obj:`list`)
+
+        Returns:
+            A list (role list) of the created Cloudera Manager roles.
+        """
+        return self._post(endpoint='{}/cm/service/roles'.format(self.api_version),
+                          data=role_list).json()
 
     def get_command_information(self, command_id):
         """Get detailed information on an asynchronous command.

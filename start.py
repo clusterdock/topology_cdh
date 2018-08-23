@@ -73,6 +73,11 @@ SSL_CLIENT_TRUSTSTORE = 'client.truststore.jks'
 SSL_SERVER_PASSWORD = 'serverpass'
 SSL_CLIENT_PASSWORD = 'clientpass'
 
+# Navigator related constants.
+NAVIGATOR_AUDIT_SERVER_POSTGRESQL_PASSWORD = 'kjIPHIDCuX'
+NAVIGATOR_METASERVER_POSTGRESQL_PASSWORD = '5lgfqqyGWP'
+NAVIGATOR_POSTGRESQL_PORT = 7432
+
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
 
@@ -310,6 +315,10 @@ def main(args):
 
     if args.ssl:
         _setup_ssl(cluster, ['KAFKA'])
+
+    if args.navigator:
+        logger.info('Configuring Navigator ...')
+        _configure_navigator(deployment, cluster)
 
     if args.spark2_version:
         logger.info('Configuring Spark2 ...')
@@ -709,6 +718,35 @@ def _configure_spark2(deployment, cluster, history_server_node):
     # first_run_service is needed as it creates HDFS dir. /user/spark/spark2ApplicationHistory that is needed by
     # Spark2 History Server. Without that, starting of Spark2 service fails.
     deployment.first_run_service(DEFAULT_CLUSTER_NAME, service_name, 300)
+
+
+def _configure_navigator(deployment, cluster):
+    logger.info('Begin trial license for cluster (%s) ...', DEFAULT_CLUSTER_NAME)
+    deployment.begin_trial()
+
+    logger.info('Adding Navigator roles to cm for cluster (%s) ...', DEFAULT_CLUSTER_NAME)
+    primary_node = cluster.primary_node
+    navigator_metadata_server_role = {'type': 'NAVIGATORMETASERVER',
+                                      'config': {'items': [
+                                          {'name': 'nav_metaserver_database_host',
+                                           'value': '{}:{}'.format(primary_node.fqdn, NAVIGATOR_POSTGRESQL_PORT)},
+                                          {'name': 'nav_metaserver_database_password',
+                                           'value': NAVIGATOR_METASERVER_POSTGRESQL_PASSWORD},
+                                          {'name': 'nav_metaserver_database_type',
+                                           'value': 'postgresql'}
+                                      ]},
+                                      'hostRef': {'hostId': cluster.primary_node.host_id}}
+    navigator_audit_server_role = {'type': 'NAVIGATOR',
+                                   'config': {'items': [
+                                       {'name': 'navigator_database_host',
+                                        'value': '{}:{}'.format(primary_node.fqdn, NAVIGATOR_POSTGRESQL_PORT)},
+                                       {'name': 'navigator_database_password',
+                                        'value': NAVIGATOR_AUDIT_SERVER_POSTGRESQL_PASSWORD},
+                                       {'name': 'navigator_database_type',
+                                        'value': 'postgresql'}
+                                   ]},
+                                   'hostRef': {'hostId': primary_node.host_id}}
+    deployment.create_cm_roles([navigator_metadata_server_role, navigator_audit_server_role])
 
 
 def _install_kudu(deployment, kudu_version):
