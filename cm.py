@@ -31,7 +31,7 @@ class ClouderaManagerParcel:
         self.version = version
         self.stage = stage
 
-    def download(self, timeout=300):
+    def download(self, timeout=300, time_to_success=0):
         logger.info('Downloading parcel (product = %s, version = %s) on cluster %s ...',
                     self.product,
                     self.version,
@@ -41,7 +41,7 @@ class ClouderaManagerParcel:
                                                                   version=self.version)
         if not command['active'] and not command['success']:
             raise Exception('{} parcel failed to download.'.format(self.product))
-        self.wait_for_stage('DOWNLOADED')
+        self.wait_for_stage('DOWNLOADED', timeout=timeout, time_to_success=time_to_success)
         return self
 
     def distribute(self, timeout=300, time_to_success=0):
@@ -54,7 +54,7 @@ class ClouderaManagerParcel:
                                                                     version=self.version)
         if not command['active'] and not command['success']:
             raise Exception('{} parcel failed to distribute.'.format(self.product))
-        self.wait_for_stage('DISTRIBUTED')
+        self.wait_for_stage('DISTRIBUTED', timeout=timeout, time_to_success=time_to_success)
         return self
 
     def activate(self, timeout=300, time_to_success=0):
@@ -67,7 +67,7 @@ class ClouderaManagerParcel:
                                                                   version=self.version)
         if not command['active'] and not command['success']:
             raise Exception('{} parcel failed to activate.'.format(self.product))
-        self.wait_for_stage('ACTIVATED')
+        self.wait_for_stage('ACTIVATED', timeout=timeout, time_to_success=time_to_success)
         return self
 
     def deactivate(self, timeout=300, time_to_success=0):
@@ -80,7 +80,7 @@ class ClouderaManagerParcel:
                                                                   version=self.version)
         if not command['active'] and not command['success']:
             raise Exception('{} parcel failed to deactivate.'.format(self.product))
-        self.wait_for_stage('DISTRIBUTED')
+        self.wait_for_stage('DISTRIBUTED', timeout=timeout, time_to_success=time_to_success)
         return self
 
     def wait_for_stage(self, stage, timeout=300, time_to_success=0):

@@ -49,7 +49,10 @@ KDC_KEYTAB_FILENAME = '{}/clusterdock.keytab'.format(KERBEROS_CONFIG_CONTAINER_D
 KDC_KRB5_CONF_FILENAME = '/etc/krb5.conf'
 LINUX_USER_ID_START = 1000
 
+EARLIEST_CDH_VERSION_WITH_KAFKA = (6, 0, 0)
 EARLIEST_CDH_VERSION_WITH_KUDU = (5, 13, 0)
+EARLIEST_CDH_VERSION_WITH_SPARK2 = (6, 0, 0)
+
 KUDU_PARCEL_VERSION_REGEX = r'(.*)-.*\.cdh(.*)\.p'
 KAFKA_PARCEL_REPO_URL = 'https://archive.cloudera.com/kafka/parcels'
 KUDU_PARCEL_REPO_URL = 'https://archive.cloudera.com/kudu/parcels'
@@ -82,6 +85,10 @@ logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
 
 def main(args):
+
+    if args.include_services and args.exclude_services:
+        raise ValueError('Cannot pass both --include-services and --exclude-services.')
+
     image_prefix = '{}/{}/clusterdock:cdh{}_cm{}'.format(args.registry,
                                                          args.namespace or DEFAULT_NAMESPACE,
                                                          args.cdh_version,
@@ -121,13 +128,21 @@ def main(args):
         for node in nodes:
             node.volumes.append(java_image)
 
-    if args.spark2_version:
-        spark2_parcel_image = ('{}/{}/clusterdock:topology_cdh-spark-{}').format(args.registry,
-                                                                                 args.namespace or DEFAULT_NAMESPACE,
-                                                                                 args.spark2_version)
-        logger.debug('Adding Spark2 parcel image %s to CM nodes ...', spark2_parcel_image)
-        for node in nodes:
-            node.volumes.append(spark2_parcel_image)
+    cdh_version_tuple = tuple(int(i) if i.isdigit() else i for i in args.cdh_version.split('.'))
+
+    # Gather services to add depending on values of --include-services and --exclude-services.
+    # These services accept version as arguments e.g. kafka_version, kudu_version.
+    services_to_add = set()
+    if args.spark2_version and cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_SPARK2:
+        if _is_service_to_add('SPARK2_ON_YARN', args.include_services, args.exclude_services):
+            services_to_add.add('SPARK2_ON_YARN')
+            image_name = '{}/{}/clusterdock:topology_cdh-spark-{}'
+            spark2_parcel_image = image_name.format(args.registry,
+                                                    args.namespace or DEFAULT_NAMESPACE,
+                                                    args.spark2_version)
+            logger.debug('Adding Spark2 parcel image %s to CM nodes ...', spark2_parcel_image)
+            for node in nodes:
+                node.volumes.append(spark2_parcel_image)
 
     if args.kerberos:
         dir = '{}/kerberos'.format(args.clusterdock_config_directory)
@@ -146,7 +161,9 @@ def main(args):
     # Keep track of whether to suppress DEBUG-level output in commands.
     quiet = not args.verbose
 
-    if args.spark2_version:
+    if args.spark2_version and 'SPARK2_ON_YARN' in services_to_add:
+        # Install is needed only when Spark2 is not integrated.
+        logger.info('Installing Spark2 from local repo ...')
         _install_service_from_local_repo(cluster, product='SPARK2')
 
     if args.kerberos:
@@ -264,9 +281,13 @@ def main(args):
     logger.info('Updating CM server configurations ...')
     deployment.update_cm_config(configs={'manages_parcels': True})
 
+    # Services that are not added by default by CDH core parcel are added. e.g. KAFKA, KUDU, SPARK2_ON_YARN.
+    # Validate passed service versions and add them to set of services_to_add.
+    # SPARK2_ON_YARN is already validated by now.
+    services_to_add.update(_validate_services_to_add(cdh_version_tuple, cm_cluster, args.exclude_services,
+                                                     args.include_services, args.kafka_version, args.kudu_version))
+
     if args.include_services:
-        if args.exclude_services:
-            raise ValueError('Cannot pass both --include-services and --exclude-services.')
         service_types_to_leave = args.include_services.upper().split(',')
         for service in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME):
             if service['type'] not in service_types_to_leave:
@@ -313,29 +334,27 @@ def main(args):
             deployment.api_client.delete_cluster_service(cluster_name=DEFAULT_CLUSTER_NAME,
                                                          service_name=service['name'])
 
-    if args.ssl:
-        _setup_ssl(cluster, ['KAFKA'])
-
     if args.navigator:
         logger.info('Configuring Navigator ...')
         _configure_navigator(deployment, cluster)
 
-    if args.spark2_version:
+    if 'SPARK2_ON_YARN' in services_to_add:
         logger.info('Configuring Spark2 ...')
-        _configure_spark2(deployment, cluster, secondary_nodes[0])
-        # Stopping of services after first_run is needed for kerberos to work correctly.
-        logger.info('Stopping cluster services after _configure_spark2 ...')
-        cm_cluster.stop()
+        _configure_spark2(deployment, cluster, secondary_nodes[0] if not args.single_node else primary_node)
+        if args.kerberos:
+            # Stopping of services after first_run, is needed for kerberos to work correctly.
+            logger.info('Stopping cluster services after adding Spark2 as some were started during first_run ...')
+            cm_cluster.stop()
 
-    if args.kafka_version:
+    if 'KAFKA' in services_to_add:
+        if args.ssl:
+            _setup_ssl(cluster, ['KAFKA'])
         logger.info('Configuring Kafka ...')
-        _configure_kafka(deployment, cluster, args.kafka_version, args.ssl)
+        _configure_kafka(deployment, cluster, args.kafka_version, cdh_version_tuple, args.ssl)
 
-    if args.kudu_version:
-        logger.info('Validating Kudu ...')
-        _validate_kudu_version(args.kudu_version, args.cdh_version, cm_cluster)
+    if 'KUDU' in services_to_add:
         logger.info('Configuring Kudu ...')
-        _configure_kudu(deployment, cluster, kudu_version=args.kudu_version, cdh_version=args.cdh_version)
+        _configure_kudu(deployment, cluster, args.kudu_version, args.cdh_version, args.single_node)
 
     if args.kerberos:
         logger.info('Configure Cloudera Manager for Kerberos ...')
@@ -365,6 +384,15 @@ def main(args):
                                cluster_name=DEFAULT_CLUSTER_NAME,
                                cluster=cluster, quiet=not args.verbose,
                                kerberos_principals=args.kerberos_principals)
+
+
+def _is_service_to_add(service_type, include_services, exclude_services):
+    if include_services:
+        return service_type in include_services.upper().split(',')
+    elif exclude_services:
+        return service_type not in exclude_services.upper().split(',')
+    else:
+        return True
 
 
 def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
@@ -619,13 +647,14 @@ def _install_parcel_from_remote_repo(deployment, product, version, parcel_repo_v
     service_parcel.download().distribute().activate()
 
 
-def _configure_kafka(deployment, cluster, kafka_version, ssl):
-    _deactivate_service_parcel(deployment, cluster, 'KAFKA', kafka_version)
-    for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
-        if parcel.product == 'KAFKA' and parcel.stage in 'ACTIVATED':
-            break
-    else:
-        _install_parcel_from_remote_repo(deployment, 'KAFKA', kafka_version)
+def _configure_kafka(deployment, cluster, kafka_version, cdh_version_tuple, ssl):
+    if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_KAFKA:
+        _deactivate_service_parcel(deployment, cluster, 'KAFKA', kafka_version)
+        for parcel in deployment.cluster(DEFAULT_CLUSTER_NAME).parcels:
+            if parcel.product == 'KAFKA' and parcel.stage in 'ACTIVATED':
+                break
+        else:
+            _install_parcel_from_remote_repo(deployment, 'KAFKA', kafka_version)
 
     logger.info('Adding Kafka service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     broker_role = {'type': 'KAFKA_BROKER',
@@ -784,34 +813,63 @@ def _install_kudu(deployment, kudu_version):
             break
 
 
-def _validate_kudu_version(kudu_version, cdh_version, cm_cluster):
-    cdh_version_tuple = tuple(int(i) for i in cdh_version.split('.'))
+# Check if service needs to be added and if yes, validate the service version passed.
+# Returns services to add if valid.
+def _validate_services_to_add(cdh_version_tuple, cm_cluster, exclude_services,
+                              include_services, kafka_version, kudu_version):
+    services_to_validate = set()
+    if kafka_version and _is_service_to_add('KAFKA', include_services, exclude_services):
+        services_to_validate.add('KAFKA')
+    if kudu_version and _is_service_to_add('KUDU', include_services, exclude_services):
+        services_to_validate.add('KUDU')
+    if services_to_validate:
+        logger.info('Validating passed service versions ...')
 
-    if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_KUDU:
-        cdh_version_from_map = KUDU_PARCEL_VERSIONS.get(kudu_version)
-        if cdh_version_from_map is None:
-            raise Exception('Kudu version {} is not available for '
-                            'CDH {} Aborting ...'.format(kudu_version, cdh_version))
-    else:
-        # For CDH 5.13.0 and above, Kudu is integrated in CDH and only the integrated version can be installed.
-        # Hence check if the parameter Kudu version matches integrated Kudu version for the specific CDH version.
-        cluster_info = cm_cluster.get_cluster_info()
-        if cluster_info is not None:
-            cluster_display_name = cluster_info['displayName']
-            inspect_hosts_contents = cm_cluster.download_command_output(cm_cluster.inspect_hosts())
-            for item in inspect_hosts_contents['componentSetByCluster'][cluster_display_name][0]['componentInfo']:
-                if item['name'] == 'kudu':
-                    break
+    cluster_info = cm_cluster.get_cluster_info()
+    if cluster_info is not None:
+        cluster_display_name = cluster_info['displayName']
+        inspect_hosts_contents = cm_cluster.download_command_output(cm_cluster.inspect_hosts())
+
+    for service in services_to_validate:
+        if service == 'KUDU':
+            if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_KUDU:
+                cdh_version_from_map = KUDU_PARCEL_VERSIONS.get(kudu_version)
+                if cdh_version_from_map is None:
+                    cdh_version = '.'.join(str(i) for i in cdh_version_tuple)
+                    raise Exception('Kudu version {} is not available for '
+                                    'CDH {} Aborting ...'.format(kudu_version, cdh_version))
             else:
-                raise Exception('Integrated Kudu version for CDH {} not found.'.format(cdh_version))
-            cluster_kudu_version = item['componentVersion'].split('+')[0]
-        if kudu_version != cluster_kudu_version:
-            raise Exception('Kudu version {} does not match integrated Kudu version {} for '
-                            'CDH {} Aborting ...'.format(kudu_version, cluster_kudu_version, cdh_version))
+                _validate_integrated_service_version(cdh_version_tuple, cluster_display_name,
+                                                     EARLIEST_CDH_VERSION_WITH_KUDU,
+                                                     inspect_hosts_contents, 'kudu', kudu_version)
+        elif service == 'KAFKA':
+            _validate_integrated_service_version(cdh_version_tuple, cluster_display_name,
+                                                 EARLIEST_CDH_VERSION_WITH_KAFKA,
+                                                 inspect_hosts_contents, 'kafka', kafka_version)
+
+    return services_to_validate
 
 
-def _configure_kudu(deployment, cluster, kudu_version, cdh_version):
-    cdh_version_tuple = tuple(int(i) for i in cdh_version.split('.'))
+def _validate_integrated_service_version(cdh_version_tuple, cluster_display_name, earliest_cdh_version_with_service,
+                                         inspect_hosts_contents, service_name, service_version):
+    if cdh_version_tuple >= earliest_cdh_version_with_service:
+        # Check if the parameter service_version matches integrated service version for the specific CDH version.
+        for item in inspect_hosts_contents['componentSetByCluster'][cluster_display_name][0]['componentInfo']:
+            if item['name'] == service_name:
+                break
+        else:
+            cdh_version = '.'.join(str(i) for i in cdh_version_tuple)
+            raise Exception('Integrated {} version for CDH {} not found.'.format(service_name, cdh_version))
+        cluster_service_version = item['componentVersion'].split('+')[0]
+        if service_version != cluster_service_version:
+            cdh_version = '.'.join(str(i) for i in cdh_version_tuple)
+            raise Exception('{} version {} does not match integrated version {} for '
+                            'CDH {} Aborting ...'.format(service_name, service_version,
+                                                         cluster_service_version, cdh_version))
+
+
+def _configure_kudu(deployment, cluster, kudu_version, cdh_version, single_node):
+    cdh_version_tuple = tuple(int(i) if i.isdigit() else i for i in cdh_version.split('.'))
 
     if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_KUDU:
         _deactivate_service_parcel(deployment, cluster, 'KUDU', kudu_version)
@@ -826,13 +884,14 @@ def _configure_kudu(deployment, cluster, kudu_version, cdh_version):
                    'hostRef': {'hostId': cluster.primary_node.host_id},
                    'config': {'items': [{'name': 'fs_wal_dir', 'value': '/data/kudu/master'},
                                         {'name': 'fs_data_dirs', 'value': '/data/kudu/master'}]}}
+    tserver_node_group = 'secondary' if not single_node else 'primary'
     tserver_roles = [{'type': 'KUDU_TSERVER',
                       'config': {'items': [
                           {'name': 'fs_wal_dir', 'value': '/data/kudu/tserver'},
                           {'name': 'fs_data_dirs', 'value': '/data/kudu/tserver'}
                       ]},
                       'hostRef': node.host_id}
-                     for node in cluster if node.group == 'secondary']
+                     for node in cluster if node.group == tserver_node_group]
     service_config = {'items': [{'name': 'gflagfile_service_safety_valve',
                                  'value': '--use_hybrid_clock=false'}]}
     deployment.create_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME,
