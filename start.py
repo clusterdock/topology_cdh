@@ -339,7 +339,7 @@ def main(args):
         version = args.sdc_version.rsplit('-')[0]
         cm_cluster.wait_for_parcel_stage(product=product, version=version, stage='DOWNLOADED')
         sdc_parcel = cm_cluster.parcel(product=product, version=version, stage='DOWNLOADED')
-        sdc_parcel.distribute().activate()
+        sdc_parcel.distribute(timeout=600).activate(timeout=600)
 
     if args.include_services:
         service_types_to_leave = args.include_services.upper().split(',')
@@ -412,7 +412,7 @@ def main(args):
 
     if args.sdc_version:
         logger.info('Configuring StreamSets Data Collector ...')
-        _configure_sdc(deployment, cluster, args)
+        _configure_sdc(args, cdh_version_tuple, cluster, deployment)
         logger.info('Adding sdc user to YARN user whitelist ..')
         _configure_yarn(deployment, cluster, cluster_name=DEFAULT_CLUSTER_NAME)
 
@@ -460,6 +460,7 @@ def _is_service_to_add(service_type, include_services, exclude_services):
         return service_type not in exclude_services.upper().split(',')
     else:
         return True
+
 
 def _configure_kdc(cluster, kerberos_principals, kerberos_ticket_lifetime, quiet):
     kdc_node = cluster.kdc_node
@@ -1132,7 +1133,7 @@ def _setup_ssl_encryption_authentication(cluster, service):
     cluster.primary_node.execute(' && '.join(ssl_authentication_commands + ssl_commands))
 
 
-def _configure_sdc(deployment, cluster, args):
+def _configure_sdc(args, cdh_version_tuple, cluster, deployment):
     logger.info('Adding StreamSets service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     datacollector_role = {'type': 'DATACOLLECTOR',
                           'hostRef': {'hostId': cluster.primary_node.host_id}}
@@ -1141,19 +1142,30 @@ def _configure_sdc(deployment, cluster, args):
                                                   'type': 'STREAMSETS',
                                                   'displayName': 'StreamSets',
                                                   'roles': [datacollector_role]}])
-    if args.spark2_version:
+
+    cluster_service_types = {service['type']
+                             for service
+                             in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME)}
+
+    configs = {}
+    environment_variables = {}
+    if 'SPARK2_ON_YARN' in cluster_service_types:
         # When running an application  with Spark2, the following
         # environment variables must be set before starting StreamSets Data Collector.
-        environment_variables = {'SPARK_SUBMIT_YARN_COMMAND': '/usr/bin/spark2-submit',
-                                 'SPARK_KAFKA_VERSION': '0.10',
-                                 'SPARK_HOME': '/opt/cloudera/parcels/SPARK2/lib/spark2'}
-    else:
+        environment_variables.update({'SPARK_SUBMIT_YARN_COMMAND': '/usr/bin/spark2-submit',
+                                      'SPARK_KAFKA_VERSION': '0.10',
+                                      'SPARK_HOME': '/opt/cloudera/parcels/SPARK2/lib/spark2'})
+    elif 'SPARK_ON_YARN' in cluster_service_types:
         # When running an application on YARN, the Spark executor requires access to the spark-submit script located in
         # the Spark installation directory. Default is directory specified by SPARK_HOME environment variable.
         # Hence SPARK_HOME environment variable must be set before starting StreamSets Data Collector.
-        environment_variables = {'SPARK_HOME': '/opt/cloudera/parcels/CDH/lib/spark'}
-    configs = {'sdc-env.sh_role_safety_valve': '\n'.join('export {}={}'.format(key, value)
-                                                         for key, value in environment_variables.items())}
+        environment_variables.update({'SPARK_HOME': '/opt/cloudera/parcels/CDH/lib/spark'})
+        if cdh_version_tuple >= EARLIEST_CDH_VERSION_WITH_SPARK2:
+            environment_variables.update({'SPARK_KAFKA_VERSION': '0.10'})
+
+    if environment_variables:
+        configs.update({'sdc-env.sh_role_safety_valve': '\n'.join('export {}={}'.format(key, value)
+                                                                  for key, value in environment_variables.items())})
 
     if args.kerberos:
         # Create JAAS config file on node-1. Needed to access kerberized Kafka.
