@@ -230,9 +230,11 @@ def main(args):
     # The work we need to do through CM itself begins here...
     deployment = ClouderaManagerDeployment(server_url)
     cm_cluster = deployment.cluster(DEFAULT_CLUSTER_NAME)
+    # For CDH 6, it takes a bit of time for CDH parcel to reach ACTIVATED stage.
+    # Hence wait for that stage to reach, otherwise the next statement to find cdh_parcel in that stage fails.
+    cm_cluster.wait_for_parcel_stage(product='CDH', version=args.cdh_version, stage='ACTIVATED')
     cdh_parcel = next(parcel for parcel in cm_cluster.parcels
-                      if parcel.product == 'CDH' and parcel.stage in ('ACTIVATING',
-                                                                      'ACTIVATED'))
+                      if parcel.product == 'CDH' and parcel.stage == 'ACTIVATED')
 
     # Wait on all slave nodes to get back to CM
     wait_for_condition(lambda: len(deployment.get_all_hosts()) == len(nodes))
