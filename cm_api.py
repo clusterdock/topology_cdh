@@ -622,6 +622,20 @@ class ApiClient:
         return self._post(endpoint='{}/cm/service/roles'.format(self.api_version),
                           data=role_list).json()
 
+    def update_cm_service_role_config_group_config(self, role_config_group_name, config_list):
+        """Update the configuration values for  Cloudera Manager service role config group.
+
+        Args:
+            role_config_group_name (:obj:`str`): The name of the role config group.
+            config_list (:obj:`dict`)
+
+        Returns:
+            A dictionary (config list) of the updated service role config group configuration.
+        """
+        return self._put(endpoint=('{}/cm/service/roleConfigGroups/{}/config').format(self.api_version,
+                                                                                      role_config_group_name),
+                         data=config_list).json()
+
     def get_command_information(self, command_id):
         """Get detailed information on an asynchronous command.
 

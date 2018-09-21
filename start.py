@@ -77,8 +77,10 @@ SSL_SERVER_PASSWORD = 'serverpass'
 SSL_CLIENT_PASSWORD = 'clientpass'
 
 # Navigator related constants.
-NAVIGATOR_AUDIT_SERVER_POSTGRESQL_PASSWORD = 'kjIPHIDCuX'
-NAVIGATOR_METASERVER_POSTGRESQL_PASSWORD = '5lgfqqyGWP'
+DB_MGMT_PROPERTIES_FILENAME = '/etc/cloudera-scm-server/db.mgmt.properties'
+# CDH versions < 5.14.0 need to have Reports Manager role created when license is applied
+# which is required for Navigator.
+EARLIEST_CDH_VERSION_WITH_NO_REPORTS_MANAGER_NEEDED = (5, 14, 0)
 NAVIGATOR_POSTGRESQL_PORT = 7432
 
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
@@ -338,7 +340,7 @@ def main(args):
 
     if args.navigator:
         logger.info('Configuring Navigator ...')
-        _configure_navigator(deployment, cluster)
+        _configure_navigator(deployment, cluster, cdh_version_tuple)
 
     if 'SPARK2_ON_YARN' in services_to_add:
         logger.info('Configuring Spark2 ...')
@@ -751,33 +753,65 @@ def _configure_spark2(deployment, cluster, history_server_node):
     deployment.first_run_service(DEFAULT_CLUSTER_NAME, service_name, 300)
 
 
-def _configure_navigator(deployment, cluster):
+def _configure_navigator(deployment, cluster, cdh_version_tuple):
     logger.info('Begin trial license for cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     deployment.begin_trial()
 
-    logger.info('Adding Navigator roles to cm for cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     primary_node = cluster.primary_node
+    navigator_roles = []
+    # Fetch the embedded database management properties.
+    db_mgmt_prop_data = primary_node.get_file(DB_MGMT_PROPERTIES_FILENAME)
+    if cdh_version_tuple < EARLIEST_CDH_VERSION_WITH_NO_REPORTS_MANAGER_NEEDED:
+        # These CDH versions need to have Reports Manager role created when license is applied.
+        logger.info('Updating Reports Manager base role configs ...')
+        configs = {'headlamp_database_name': 'rman',
+                   'headlamp_database_user': 'rman'}
+        deployment.update_cm_service_role_config_group_config('mgmt-REPORTSMANAGER-BASE', configs)
+
+        logger.info('Configuring Reports Manager role ...')
+        reports_manager_dbpassword = re.search('com.cloudera.cmf.REPORTSMANAGER.db.password=(.*)', db_mgmt_prop_data)
+        reports_manager_role = {'type': 'REPORTSMANAGER',
+                                'config': {'items': [
+                                    {'name': 'headlamp_database_host',
+                                     'value': '{}:{}'.format(primary_node.fqdn, NAVIGATOR_POSTGRESQL_PORT)},
+                                    {'name': 'headlamp_database_password',
+                                     'value': reports_manager_dbpassword.group(1)},
+                                    {'name': 'headlamp_database_type',
+                                     'value': 'postgresql'}
+                                ]},
+                                'hostRef': {'hostId': cluster.primary_node.host_id}}
+        navigator_roles.append(reports_manager_role)
+
+    logger.info('Configuring Navigator Metaserver role ...')
+    navigator_metaserver_dbpassword = re.search('cloudera.cmf.NAVIGATORMETASERVER.db.password=(.*)', db_mgmt_prop_data)
     navigator_metadata_server_role = {'type': 'NAVIGATORMETASERVER',
                                       'config': {'items': [
                                           {'name': 'nav_metaserver_database_host',
                                            'value': '{}:{}'.format(primary_node.fqdn, NAVIGATOR_POSTGRESQL_PORT)},
                                           {'name': 'nav_metaserver_database_password',
-                                           'value': NAVIGATOR_METASERVER_POSTGRESQL_PASSWORD},
+                                           'value': navigator_metaserver_dbpassword.group(1)},
                                           {'name': 'nav_metaserver_database_type',
                                            'value': 'postgresql'}
                                       ]},
                                       'hostRef': {'hostId': cluster.primary_node.host_id}}
+    navigator_roles.append(navigator_metadata_server_role)
+
+    logger.info('Configuring Audit Server role ...')
+    navigator_dbpassword = re.search('com.cloudera.cmf.NAVIGATOR.db.password=(.*)', db_mgmt_prop_data)
     navigator_audit_server_role = {'type': 'NAVIGATOR',
                                    'config': {'items': [
                                        {'name': 'navigator_database_host',
                                         'value': '{}:{}'.format(primary_node.fqdn, NAVIGATOR_POSTGRESQL_PORT)},
                                        {'name': 'navigator_database_password',
-                                        'value': NAVIGATOR_AUDIT_SERVER_POSTGRESQL_PASSWORD},
+                                        'value': navigator_dbpassword.group(1)},
                                        {'name': 'navigator_database_type',
                                         'value': 'postgresql'}
                                    ]},
                                    'hostRef': {'hostId': primary_node.host_id}}
-    deployment.create_cm_roles([navigator_metadata_server_role, navigator_audit_server_role])
+    navigator_roles.append(navigator_audit_server_role)
+
+    logger.info('Adding Navigator roles to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
+    deployment.create_cm_roles(navigator_roles)
 
 
 def _install_kudu(deployment, kudu_version):

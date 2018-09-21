@@ -508,6 +508,23 @@ class ClouderaManagerDeployment:
         }
         return self.api_client.update_cm_config(config_list=config_list)['items']
 
+    def update_cm_service_role_config_group_config(self, role_config_group_name, configs):
+        """Update the configuration values for  Cloudera Manager service role config group.
+        Args:
+            role_config_group_name (:obj:`str`): The name of the role config group.
+            configs (:obj:`dict`): Configurations to update.
+
+        Returns:
+            A dictionary of the updated CM service role config group configuration.
+        """
+        config_list = {
+            'items': [{'name': name, 'value': value}
+                      for name, value in configs.items()]
+        }
+        return self.api_client.update_cm_service_role_config_group_config(
+            role_config_group_name=role_config_group_name, config_list=config_list
+        )['items']
+
     def create_cm_roles(self, roles):
         """Create Cloudera Manager roles.
 
