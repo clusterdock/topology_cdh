@@ -368,7 +368,7 @@ def main(args):
         version = args.sdc_version.rsplit('-')[0]
         cm_cluster.wait_for_parcel_stage(product=product, version=version, stage='DOWNLOADED')
         sdc_parcel = cm_cluster.parcel(product=product, version=version, stage='DOWNLOADED')
-        sdc_parcel.distribute(timeout=600).activate(timeout=600)
+        sdc_parcel.distribute(timeout=900).activate(timeout=600)
 
     if args.include_services:
         service_types_to_leave = args.include_services.upper().split(',')
