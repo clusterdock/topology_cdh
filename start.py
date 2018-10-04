@@ -91,6 +91,22 @@ DB_MGMT_PROPERTIES_FILENAME = '/etc/cloudera-scm-server/db.mgmt.properties'
 # which is required for Navigator.
 EARLIEST_CDH_VERSION_WITH_NO_REPORTS_MANAGER_NEEDED = (5, 14, 0)
 NAVIGATOR_POSTGRESQL_PORT = 7432
+NAVIGATOR_PORT = 7187
+SDC_PROPERTIES_FOR_NAVIGATOR = """lineage.publishers=navigator
+lineage.publisher.navigator.def={navigator_stage_lib}::com_streamsets_pipeline_stage_plugin_navigator_NavigatorLineagePublisher
+lineage.publisher.navigator.config.application_url=http://{sdc_node_fqdn}:{sdc_port}
+lineage.publisher.navigator.config.navigator_url=http://{navigator_node_fqdn}:{navigator_port}
+lineage.publisher.navigator.config.namespace=sdc
+lineage.publisher.navigator.config.username=admin
+lineage.publisher.navigator.config.password=admin
+lineage.publisher.navigator.config.autocommit=true"""
+# Location of SDC user libs on the cluster node where SDC is installed.
+# Docker images of the SDC user libs volume mount to the following location.
+SDC_USER_LIBS_PATH = '/opt/streamsets-datacollector-user-libs'
+SDC_USER_LIBS_SECURITY_POLICY = """grant codebase "file:///opt/streamsets-datacollector-user-libs/-" {
+  permission java.security.AllPermission;
+};"""
+
 SDC_PORT = 18630
 SDC_RESOURCES_DIRECTORY = '/var/lib/sdc/resources'  # Default path for $SDC_RESOURCES.
 
@@ -169,6 +185,19 @@ def main(args):
         logger.debug('Adding SDC parcel image %s to CM nodes ...', sdc_parcel_image)
         for node in nodes:
             node.volumes.append(sdc_parcel_image)
+
+        if args.navigator:
+            try:
+                navigator_stage_lib = _get_navigator_stage_lib_name(args.cm_version,
+                                                                    args.additional_stage_libs_version)
+                stage_lib_name = '{}/{}/additional-datacollector-libs:{}'
+                navigator_stage_lib_image = stage_lib_name.format(args.registry,
+                                                                  args.namespace or DEFAULT_NAMESPACE,
+                                                                  navigator_stage_lib)
+                logger.debug('Adding stage lib image for Navigator %s to primary node ... ', navigator_stage_lib_image)
+                primary_node.volumes.append(navigator_stage_lib_image)
+            except:
+                raise Exception('No Navigator stage library found for CM version {} ...'.format(args.cm_version))
 
         # Volume mount SDC resources.
         # e.g. If /home/ubuntu/protobuf is passed, then it gets mounted to SDC_RESOURCES_DIRECTORY/protobuf on SDC node
@@ -433,10 +462,15 @@ def main(args):
     logger.info('Stopping cluster services ...')
     cm_cluster.stop()
     if not args.dont_start_cluster:
-        logger.info('Starting cluster services ...')
-        cm_cluster.start()
+        # Navigator requires restart of some of the services after CM service is started. Hence start CM service first.
         logger.info('Starting CM services ...')
         _start_cm_service(deployment=deployment)
+        logger.info('Starting cluster services ...')
+        cm_cluster.start()
+        # If Navigator is enabled, then restart of SDC is required to publish lineage events properly.
+        if args.sdc_version and args.navigator:
+            logger.info('Restarting SDC service ...')
+            deployment.restart_service(DEFAULT_CLUSTER_NAME, 'streamsets')
 
         logger.info('Validating service health ...')
         _validate_service_health(deployment=deployment, cluster_name=DEFAULT_CLUSTER_NAME)
@@ -451,7 +485,8 @@ def main(args):
                                               cluster_name=DEFAULT_CLUSTER_NAME,
                                               cluster=cluster, quiet=not args.verbose,
                                               kerberos_enabled=args.kerberos,
-                                              kerberos_principals=args.kerberos_principals)
+                                              kerberos_principals=args.kerberos_principals,
+                                              navigator_enabled=args.navigator)
 
 def _is_service_to_add(service_type, include_services, exclude_services):
     if include_services:
@@ -1133,10 +1168,18 @@ def _setup_ssl_encryption_authentication(cluster, service):
     cluster.primary_node.execute(' && '.join(ssl_authentication_commands + ssl_commands))
 
 
+def _get_navigator_stage_lib_name(cm_version, additional_stage_libs_version=None):
+    cm_version_tuple = tuple(cm_version.split('.'))
+    navigator_stage_lib_prefix = 'streamsets-datacollector-cm_{}_{}-lib'.format(*cm_version_tuple[:2])
+    return ('{}-{}'.format(navigator_stage_lib_prefix, additional_stage_libs_version)
+            if additional_stage_libs_version else navigator_stage_lib_prefix)
+
+
 def _configure_sdc(args, cdh_version_tuple, cluster, deployment):
     logger.info('Adding StreamSets service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
+    primary_node = cluster.primary_node
     datacollector_role = {'type': 'DATACOLLECTOR',
-                          'hostRef': {'hostId': cluster.primary_node.host_id}}
+                          'hostRef': {'hostId': primary_node.host_id}}
     deployment.create_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME,
                                        services=[{'name': 'streamsets',
                                                   'type': 'STREAMSETS',
@@ -1163,13 +1206,24 @@ def _configure_sdc(args, cdh_version_tuple, cluster, deployment):
         if cdh_version_tuple >= EARLIEST_CDH_VERSION_WITH_SPARK2:
             environment_variables.update({'SPARK_KAFKA_VERSION': '0.10'})
 
+    if args.navigator:
+        navigator_stage_lib = _get_navigator_stage_lib_name(args.cm_version)
+        environment_variables.update({'USER_LIBRARIES_DIR': SDC_USER_LIBS_PATH})
+        sdc_properties = SDC_PROPERTIES_FOR_NAVIGATOR.format(navigator_node_fqdn=primary_node.fqdn,
+                                                             navigator_port=NAVIGATOR_PORT,
+                                                             navigator_stage_lib=navigator_stage_lib,
+                                                             sdc_node_fqdn=primary_node.fqdn,
+                                                             sdc_port=SDC_PORT
+                                                             )
+        configs['sdc.properties_role_safety_valve'] = sdc_properties
+        configs['sdc-security.policy_role_safety_valve'] = SDC_USER_LIBS_SECURITY_POLICY
+
     if environment_variables:
         configs.update({'sdc-env.sh_role_safety_valve': '\n'.join('export {}={}'.format(key, value)
                                                                   for key, value in environment_variables.items())})
 
     if args.kerberos:
         # Create JAAS config file on node-1. Needed to access kerberized Kafka.
-        primary_node = cluster.primary_node
         sdc_principal = 'sdc/{kafka_node_name}@{realm}'.format(kafka_node_name=primary_node.fqdn,
                                                                realm=cluster.network.upper())
         primary_node.put_file(JAAS_CONFIG_FILE_PATH, JAAS_CONFIG.format(KERBEROS_CONFIG_CONTAINER_DIR, sdc_principal))
@@ -1452,7 +1506,12 @@ def _configure_yarn(deployment, cluster, cluster_name):
 
 
 def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, quiet,
-                                          kerberos_enabled, kerberos_principals):
+                                          kerberos_enabled, kerberos_principals, navigator_enabled):
+    primary_node = cluster.primary_node
+    if navigator_enabled:
+        command = 'chown -R sdc:sdc {}'.format(SDC_USER_LIBS_PATH)
+        primary_node.execute(command)
+
     # Following is needed for Kerberos and Kafka to work correctly.
     logger.info('Copying streamsets keytab to a fixed location which is shared on all clustered nodes ...')
     commands = [('cp "$(find /var/run/cloudera-scm-agent/process/*streamsets-DATACOLLECTOR -maxdepth 0 -mindepth 0 | '
@@ -1463,7 +1522,7 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
 
     cluster_service_types = {service['type']
                              for service
-                             in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME)}
+                             in deployment.get_cluster_services(cluster_name=cluster_name)}
 
     if 'HDFS' in cluster_service_types and kerberos_principals:
         if 'sdctest' in kerberos_principals.split(','):
@@ -1477,8 +1536,6 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
         SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
 
         logger.info('Creating sample schemaless collection for Solr ...')
-        primary_node = cluster.primary_node
-
         primary_node.execute('solrctl instancedir --generate '
                              '/root/sample_collection_solr_configs -schemaless', quiet=quiet)
         solr_config = primary_node.get_file(SOLR_CONFIG_FILE_PATH)

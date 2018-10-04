@@ -71,6 +71,9 @@ start args:
     --navigator:
         action: store_true
         help: If specified, enable Cloudera Navigator for the cluster
+    --additional-stage-libs-version:
+        help: If specified, the version of StreamSets Data Collector additional stage libs
+        metavar: ver
     --predictable:
         action: store_true
         help: If specified, attempt to expose container ports to the same port number on the host
