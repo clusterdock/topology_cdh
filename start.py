@@ -158,7 +158,7 @@ def main(args):
 
     cluster = Cluster(*nodes + ([kdc_node] if args.kerberos else []))
     cluster.primary_node = primary_node
-    cluster.start(args.network)
+    cluster.start(args.network, pull_images=args.always_pull)
 
     # Keep track of whether to suppress DEBUG-level output in commands.
     quiet = not args.verbose
