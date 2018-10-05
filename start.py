@@ -1513,12 +1513,14 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
         primary_node.execute(command)
 
     # Following is needed for Kerberos and Kafka to work correctly.
-    logger.info('Copying streamsets keytab to a fixed location which is shared on all clustered nodes ...')
-    commands = [('cp "$(find /var/run/cloudera-scm-agent/process/*streamsets-DATACOLLECTOR -maxdepth 0 -mindepth 0 | '
-                 'sort -rs | head -1)/streamsets.keytab" {}/streamsets.keytab').format(KERBEROS_CONFIG_CONTAINER_DIR),
-                'chown sdc:sdc {}/streamsets.keytab'.format(KERBEROS_CONFIG_CONTAINER_DIR),
-                'chown sdc:sdc {}'.format(JAAS_CONFIG_FILE_PATH)]
-    cluster.primary_node.execute(' && '.join(commands))
+    if kerberos_enabled:
+        logger.info('Copying streamsets keytab to a fixed location which is shared on all clustered nodes ...')
+        commands = [('cp "$(find /var/run/cloudera-scm-agent/process/*streamsets-DATACOLLECTOR '
+                     ' -maxdepth 0 -mindepth 0 | sort -rs | '
+                     'head -1)/streamsets.keytab" {}/streamsets.keytab').format(KERBEROS_CONFIG_CONTAINER_DIR),
+                    'chown sdc:sdc {}/streamsets.keytab'.format(KERBEROS_CONFIG_CONTAINER_DIR),
+                    'chown sdc:sdc {}'.format(JAAS_CONFIG_FILE_PATH)]
+        cluster.primary_node.execute(' && '.join(commands))
 
     cluster_service_types = {service['type']
                              for service
