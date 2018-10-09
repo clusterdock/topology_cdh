@@ -21,7 +21,7 @@ from configobj import ConfigObj
 from clusterdock.models import Cluster, client, Node
 from clusterdock.utils import nested_get, wait_for_condition
 
-from topology_cdh import cm
+from topology_cdh import cm, sdc
 
 DEFAULT_NAMESPACE = 'streamsets'
 
@@ -51,6 +51,7 @@ LINUX_USER_ID_START = 1000
 
 EARLIEST_CDH_VERSION_WITH_KAFKA = (6, 0, 0)
 EARLIEST_CDH_VERSION_WITH_KUDU = (5, 13, 0)
+EARLIEST_CDH_VERSION_WITH_LEGACY_STAGE_LIB = (5, 9, 0)
 EARLIEST_CDH_VERSION_WITH_SPARK2 = (6, 0, 0)
 EARLIEST_CDH_VERSION_WITH_CENTOS6_8 = (6, 1, 1)
 # JAAS configuration for SDC to connect to Kerberized Kafka.
@@ -92,23 +93,6 @@ DB_MGMT_PROPERTIES_FILENAME = '/etc/cloudera-scm-server/db.mgmt.properties'
 EARLIEST_CDH_VERSION_WITH_NO_REPORTS_MANAGER_NEEDED = (5, 14, 0)
 NAVIGATOR_POSTGRESQL_PORT = 7432
 NAVIGATOR_PORT = 7187
-SDC_PROPERTIES_FOR_NAVIGATOR = """lineage.publishers=navigator
-lineage.publisher.navigator.def={navigator_stage_lib}::com_streamsets_pipeline_stage_plugin_navigator_NavigatorLineagePublisher
-lineage.publisher.navigator.config.application_url=http://{sdc_node_fqdn}:{sdc_port}
-lineage.publisher.navigator.config.navigator_url=http://{navigator_node_fqdn}:{navigator_port}
-lineage.publisher.navigator.config.namespace=sdc
-lineage.publisher.navigator.config.username=admin
-lineage.publisher.navigator.config.password=admin
-lineage.publisher.navigator.config.autocommit=true"""
-# Location of SDC user libs on the cluster node where SDC is installed.
-# Docker images of the SDC user libs volume mount to the following location.
-SDC_USER_LIBS_PATH = '/opt/streamsets-datacollector-user-libs'
-SDC_USER_LIBS_SECURITY_POLICY = """grant codebase "file:///opt/streamsets-datacollector-user-libs/-" {
-  permission java.security.AllPermission;
-};"""
-
-SDC_PORT = 18630
-SDC_RESOURCES_DIRECTORY = '/var/lib/sdc/resources'  # Default path for $SDC_RESOURCES.
 
 logger = logging.getLogger('clusterdock.{}'.format(__name__))
 
@@ -142,7 +126,7 @@ def main(args):
     clusterdock_config_host_dir = os.path.realpath(os.path.expanduser(args.clusterdock_config_directory))
     volumes = [{clusterdock_config_host_dir: CLUSTERDOCK_CLIENT_CONTAINER_DIR}]
     if args.sdc_version:
-        ports.append({SDC_PORT: SDC_PORT} if args.predictable else SDC_PORT)
+        ports.append({sdc.SDC_PORT: sdc.SDC_PORT} if args.predictable else sdc.SDC_PORT)
     primary_node = Node(hostname=args.primary_node[0], group='primary',
                         image=primary_node_image if not args.single_node else single_node_image,
                         ports=ports,
@@ -177,34 +161,24 @@ def main(args):
 
     if args.sdc_version:
         logger.info('args.sdc_version = %s', args.sdc_version)
-        sdc_parcel_image = ('{}/{}/clusterdock:topology_cdh-'
-                            'streamsets_datacollector-{}').format(args.registry,
-                                                                  args.namespace
-                                                                  or DEFAULT_NAMESPACE,
-                                                                  args.sdc_version)
+        data_collector = sdc.StreamsetsDataCollector(args.sdc_version,
+                                                     args.namespace or DEFAULT_NAMESPACE,
+                                                     args.registry)
+        sdc_parcel_image = data_collector.image_name
         logger.debug('Adding SDC parcel image %s to CM nodes ...', sdc_parcel_image)
         for node in nodes:
             node.volumes.append(sdc_parcel_image)
 
-        if args.navigator:
-            try:
-                navigator_stage_lib = _get_navigator_stage_lib_name(args.cm_version,
-                                                                    args.additional_stage_libs_version)
-                stage_lib_name = '{}/{}/additional-datacollector-libs:{}'
-                navigator_stage_lib_image = stage_lib_name.format(args.registry,
-                                                                  args.namespace or DEFAULT_NAMESPACE,
-                                                                  navigator_stage_lib)
-                logger.debug('Adding stage lib image for Navigator %s to primary node ... ', navigator_stage_lib_image)
-                primary_node.volumes.append(navigator_stage_lib_image)
-            except:
-                raise Exception('No Navigator stage library found for CM version {} ...'.format(args.cm_version))
+        _load_necessary_stage_lib_volumes_for_sdc(args.additional_stage_libs_version, args.cdh_version,
+                                                  args.cm_version, data_collector, args.dataprotector,
+                                                  args.kafka_version, args.kudu_version, args.navigator, primary_node)
 
         # Volume mount SDC resources.
         # e.g. If /home/ubuntu/protobuf is passed, then it gets mounted to SDC_RESOURCES_DIRECTORY/protobuf on SDC node
         if args.sdc_resources_directory:
             sdc_resources_directory_path = os.path.realpath(os.path.expanduser(args.sdc_resources_directory))
             sdc_resources_basename = os.path.basename(sdc_resources_directory_path)
-            sdc_resources_mount_point = '{}/{}'.format(SDC_RESOURCES_DIRECTORY, sdc_resources_basename)
+            sdc_resources_mount_point = '{}/{}'.format(sdc.RESOURCES_DIRECTORY, sdc_resources_basename)
             logger.debug('Volume mounting resources from %s to %s ...',
                          sdc_resources_directory_path, sdc_resources_mount_point)
             primary_node.volumes.append({sdc_resources_directory_path: sdc_resources_mount_point})
@@ -441,7 +415,7 @@ def main(args):
 
     if args.sdc_version:
         logger.info('Configuring StreamSets Data Collector ...')
-        _configure_sdc(args, cdh_version_tuple, cluster, deployment)
+        _configure_sdc(args, cdh_version_tuple, cluster, data_collector, deployment)
         logger.info('Adding sdc user to YARN user whitelist ..')
         _configure_yarn(deployment, cluster, cluster_name=DEFAULT_CLUSTER_NAME)
 
@@ -483,10 +457,29 @@ def main(args):
 
         _configure_for_streamsets_after_start(deployment=deployment,
                                               cluster_name=DEFAULT_CLUSTER_NAME,
-                                              cluster=cluster, quiet=not args.verbose,
+                                              cluster=cluster,
+                                              quiet=not args.verbose,
                                               kerberos_enabled=args.kerberos,
                                               kerberos_principals=args.kerberos_principals,
                                               navigator_enabled=args.navigator)
+
+
+def _load_necessary_stage_lib_volumes_for_sdc(additional_stage_libs_version, cdh_version, cm_version,
+                                              data_collector, dataprotector, kafka_version, kudu_version,
+                                              navigator, primary_node):
+    stage_lib_images = data_collector.get_legacy_stage_lib_images(cdh_version, kafka_version, kudu_version)
+    if dataprotector:
+        stage_lib_images.append(data_collector.get_dataprotector_stage_lib(additional_stage_libs_version))
+    if navigator:
+        stage_lib_images.append(data_collector.get_navigator_stage_lib(cm_version, additional_stage_libs_version))
+    if stage_lib_images != []:
+        for stage_lib_image in stage_lib_images:
+            try:
+                logger.debug('Adding stage lib image %s to primary node ... ', stage_lib_image)
+                primary_node.volumes.append(stage_lib_image)
+            except:
+                raise Exception('No stage library image found for {} ...'.format(stage_lib_image))
+
 
 def _is_service_to_add(service_type, include_services, exclude_services):
     if include_services:
@@ -1175,7 +1168,7 @@ def _get_navigator_stage_lib_name(cm_version, additional_stage_libs_version=None
             if additional_stage_libs_version else navigator_stage_lib_prefix)
 
 
-def _configure_sdc(args, cdh_version_tuple, cluster, deployment):
+def _configure_sdc(args, cdh_version_tuple, cluster, data_collector, deployment):
     logger.info('Adding StreamSets service to cluster (%s) ...', DEFAULT_CLUSTER_NAME)
     primary_node = cluster.primary_node
     datacollector_role = {'type': 'DATACOLLECTOR',
@@ -1208,15 +1201,16 @@ def _configure_sdc(args, cdh_version_tuple, cluster, deployment):
 
     if args.navigator:
         navigator_stage_lib = _get_navigator_stage_lib_name(args.cm_version)
-        environment_variables.update({'USER_LIBRARIES_DIR': SDC_USER_LIBS_PATH})
-        sdc_properties = SDC_PROPERTIES_FOR_NAVIGATOR.format(navigator_node_fqdn=primary_node.fqdn,
+        sdc_properties = sdc.PROPERTIES_FOR_NAVIGATOR.format(navigator_node_fqdn=primary_node.fqdn,
                                                              navigator_port=NAVIGATOR_PORT,
                                                              navigator_stage_lib=navigator_stage_lib,
                                                              sdc_node_fqdn=primary_node.fqdn,
-                                                             sdc_port=SDC_PORT
-                                                             )
+                                                             sdc_port=sdc.SDC_PORT)
         configs['sdc.properties_role_safety_valve'] = sdc_properties
-        configs['sdc-security.policy_role_safety_valve'] = SDC_USER_LIBS_SECURITY_POLICY
+
+    if data_collector.user_libs_exist:
+        environment_variables.update({'USER_LIBRARIES_DIR': sdc.USER_LIBS_PATH})
+        configs['sdc-security.policy_role_safety_valve'] = sdc.USER_LIBS_SECURITY_POLICY
 
     if environment_variables:
         configs.update({'sdc-env.sh_role_safety_valve': '\n'.join('export {}={}'.format(key, value)
@@ -1470,7 +1464,7 @@ def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_pr
 def _configure_for_streamsets_before_start(deployment, cluster, cluster_name, sdc_resources_directory):
     if sdc_resources_directory:
         logger.info('Setting correct permissions for sdc resources recursively ...')
-        cluster.primary_node.execute('chown -R sdc:sdc {}'.format(os.path.dirname(SDC_RESOURCES_DIRECTORY)))
+        cluster.primary_node.execute('chown -R sdc:sdc {}'.format(os.path.dirname(sdc.RESOURCES_DIRECTORY)))
 
     logger.info('Adding HDFS proxy user ...')
     for service in deployment.get_cluster_services(cluster_name=cluster_name):
@@ -1510,7 +1504,7 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
                                           kerberos_enabled, kerberos_principals, navigator_enabled):
     primary_node = cluster.primary_node
     if navigator_enabled:
-        command = 'chown -R sdc:sdc {}'.format(SDC_USER_LIBS_PATH)
+        command = 'chown -R sdc:sdc {}'.format(sdc.USER_LIBS_PATH)
         primary_node.execute(command)
 
     # Following is needed for Kerberos and Kafka to work correctly.

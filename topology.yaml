@@ -39,6 +39,9 @@ start args:
         default: 5.12.0
         help: CM version to use
         metavar: ver
+    --dataprotector:
+        action: store_true
+        help: If specified, loads StreamSets Data Collector Dataprotector stage library
     --dont-start-cluster:
         action: store_true
         help: Don't start clusters/services in Cloudera Manager
