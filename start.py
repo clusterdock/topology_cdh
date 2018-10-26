@@ -1515,9 +1515,9 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
     # Following is needed for Kerberos and Kafka to work correctly.
     if kerberos_enabled:
         logger.info('Copying streamsets keytab to a fixed location which is shared on all clustered nodes ...')
-        commands = [('cp "$(find /var/run/cloudera-scm-agent/process/*streamsets-DATACOLLECTOR '
-                     ' -maxdepth 0 -mindepth 0 | sort -rs | '
-                     'head -1)/streamsets.keytab" {}/streamsets.keytab').format(KERBEROS_CONFIG_CONTAINER_DIR),
+        commands = ['cd /var/run/cloudera-scm-agent/process',
+                    ('cp "$(ls -d *streamsets-DATACOLLECTOR | sort -nr | head -1)/streamsets.keytab" '
+                     '{}/streamsets.keytab').format(KERBEROS_CONFIG_CONTAINER_DIR),
                     'chown sdc:sdc {}/streamsets.keytab'.format(KERBEROS_CONFIG_CONTAINER_DIR),
                     'chown sdc:sdc {}'.format(JAAS_CONFIG_FILE_PATH)]
         cluster.primary_node.execute(' && '.join(commands))
@@ -1528,11 +1528,14 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
 
     if 'HDFS' in cluster_service_types and kerberos_principals:
         if 'sdctest' in kerberos_principals.split(','):
-            # Following is needed as tests use HDFS directory /tmp/out.
-            commands = ['hadoop fs -mkdir /tmp/out',
-                        'hadoop fs -chown sdctest /tmp/out',
-                        'hadoop fs -chmod 1777 /tmp/out']
-        _execute_commands_against_kerberized_hdfs(cluster, commands, quiet)
+            # During testing, SDC generates some HDFS files and folders as `sdc` user.
+            # To delete them after testing, python clients use `sdctest` user.
+            # To make this delete possible by `sdctest`, on CDH cluster nodes, add `sdctest` user to supergroup
+            # which is HDFS superuser group.
+            commands = ['groupadd supergroup',
+                        'usermod -a -G supergroup sdctest']
+            for node_group_name in ['primary', 'secondary']:
+                cluster.node_groups[node_group_name].execute(' && '.join(commands), quiet=quiet)
 
     if 'SOLR' in cluster_service_types:
         SOLR_CONFIG_FILE_PATH = '/root/sample_collection_solr_configs/conf/solrconfig.xml'
@@ -1547,16 +1550,10 @@ def _configure_for_streamsets_after_start(deployment, cluster_name, cluster, qui
                                      solr_config))
         primary_node.execute('solrctl instancedir --create sample_collection '
                              '/root/sample_collection_solr_configs', quiet=quiet)
-        if kerberos_enabled:
-            # kinit with solr.keytab
-            solr_principal = 'solr/{solr_node_name}@{realm}'.format(solr_node_name=primary_node.fqdn,
-                                                                    realm=cluster.network.upper())
-            kinit_command = ('kinit -k -t "$(find /var/run/cloudera-scm-agent/process/*solr-SOLR_SERVER '
-                             '-maxdepth 0 -mindepth 0 | sort -rs | head -1)/solr.keytab" {}').format(solr_principal)
-            primary_node.execute(kinit_command)
 
-        primary_node.execute('solrctl collection --create sample_collection '
-                             '-s 1 -c sample_collection', quiet=quiet)
-
+        command = 'solrctl collection --create sample_collection -s 1 -c sample_collection'
         if kerberos_enabled:
-            primary_node.execute('kdestroy')
+            _execute_commands_against_kerberized_service(cluster, [command], 'solr-SOLR_SERVER',
+                                                         'solr', cluster.primary_node.fqdn)
+        else:
+            primary_node.execute(command, quiet=quiet)
