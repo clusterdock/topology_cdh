@@ -1463,7 +1463,8 @@ def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_pr
         if 'HDFS' in cluster_service_types:
             dir_command = 'hadoop fs -mkdir /user/{0} && hadoop fs -chown {0}:{0} /user/{0}'
             dir_commands = [dir_command.format(primary) for primary in kerberos_principals.split(',')]
-            _execute_commands_against_kerberized_hdfs(cluster, dir_commands, quiet)
+            _execute_commands_against_kerberized_service(cluster, dir_commands, 'hdfs-NAMENODE',
+                                                         'hdfs', cluster.primary_node.fqdn)
 
 
 def _configure_for_streamsets_before_start(deployment, cluster, cluster_name, sdc_resources_directory):
