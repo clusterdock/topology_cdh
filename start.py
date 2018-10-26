@@ -1264,13 +1264,16 @@ def _validate_service_health(deployment, cluster_name):
                        success=success, failure=failure)
 
 
-def _execute_commands_against_kerberized_hdfs(cluster, commands, quiet):
-    hdfs_principal = 'hdfs/{hdfs_node_name}@{realm}'.format(hdfs_node_name=cluster.primary_node.fqdn,
-                                                            realm=cluster.network.upper())
-    kinit_command = [('kinit -k -t "$(find /var/run/cloudera-scm-agent/process/*hdfs-NAMENODE '
-                      '-maxdepth 0 -mindepth 0 | sort -rs | head -1)/hdfs.keytab" {}').format(hdfs_principal)]
+def _execute_commands_against_kerberized_service(cluster, commands, service_keytab_directory_suffix,
+                                                 service_name, service_node_fqdn):
+    principal = '{service_name}/{service_node}@{realm}'.format(service_name=service_name,
+                                                               service_node=service_node_fqdn,
+                                                               realm=cluster.network.upper())
+    kinit_commands = ['cd /var/run/cloudera-scm-agent/process',
+                      ('kinit -k -t "$(ls -d *{} | sort -nr '
+                       '| head -1)/{}.keytab" {}'.format(service_keytab_directory_suffix, service_name, principal))]
     kdestroy_command = ['kdestroy']
-    cluster.primary_node.execute(' && '.join(kinit_command + commands + kdestroy_command), quiet=quiet)
+    cluster.primary_node.execute(' && '.join(kinit_commands + commands + kdestroy_command))
 
 
 def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_principals):
@@ -1284,4 +1287,5 @@ def _configure_after_start(deployment, cluster_name, cluster, quiet, kerberos_pr
         if 'HDFS' in cluster_service_types:
             dir_command = 'hadoop fs -mkdir /user/{0} && hadoop fs -chown {0}:{0} /user/{0}'
             dir_commands = [dir_command.format(primary) for primary in kerberos_principals.split(',')]
-            _execute_commands_against_kerberized_hdfs(cluster, dir_commands, quiet)
+            _execute_commands_against_kerberized_service(cluster, dir_commands, 'hdfs-NAMENODE',
+                                                         'hdfs', cluster.primary_node.fqdn)
