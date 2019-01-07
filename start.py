@@ -1482,10 +1482,11 @@ def _configure_for_streamsets_before_start(deployment, cluster, cluster_name, sd
                                              configs=configs)
             break
 
-    logger.info('Disabling security for HBase Thrift server ...')
+    logger.info('Disabling security for HBase Thrift server and adding sdc user to list of super users...')
     for service in deployment.get_cluster_services(cluster_name=cluster_name):
         if service['type'] == 'HBASE':
-            configs = {'hbase_thriftserver_security_authentication': 'none'}
+            configs = {'hbase_superuser': 'sdc',
+                       'hbase_thriftserver_security_authentication': 'none'}
             deployment.update_service_config(cluster_name=cluster_name,
                                              service_name=service['name'],
                                              configs=configs)
