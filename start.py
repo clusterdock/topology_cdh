@@ -178,6 +178,10 @@ def main(args):
     if args.java:
         _set_cm_server_java_home(primary_node, '/usr/java/{}'.format(args.java))
 
+    if args.java or (args.spark2_version and 'SPARK2_ON_YARN' in services_to_add):
+        # In case change was made to Java version or parcel/s were installed from local repo,
+        # then cloudera-scm-server needs to be restarted to take changes in effect.
+
         # Avoid CM database issues by waiting for CM to not be dead before restarting it.
         def cm_server_not_dead(primary_node):
             cm_server_status = primary_node.execute('service cloudera-scm-server status', quiet=True)
