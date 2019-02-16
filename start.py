@@ -218,7 +218,7 @@ def main(args):
     if args.java:
         _set_cm_server_java_home(primary_node, '/usr/java/{}'.format(args.java))
 
-    if args.java or (args.spark2_version and 'SPARK2_ON_YARN' in services_to_add):
+    if args.java or args.sdc_version or (args.spark2_version and 'SPARK2_ON_YARN' in services_to_add):
         # In case change was made to Java version or parcel/s were installed from local repo,
         # then cloudera-scm-server needs to be restarted to take changes in effect.
 

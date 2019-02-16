@@ -52,7 +52,6 @@ start args:
         help: If specified, a comma-separated list of service types to include in the CDH cluster
         metavar: svc1,svc2,...
     --java:
-        default: jdk1.8.0_131
         help: If specified, a Java version to use in place of the default value present on the cluster
         metavar: ver
     --kafka-version:
