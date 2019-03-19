@@ -266,7 +266,7 @@ def main(args):
                                                     for host_id in host_ids_to_add)),
                      DEFAULT_CLUSTER_NAME)
         deployment.add_cluster_hosts(cluster_name=DEFAULT_CLUSTER_NAME, host_ids=host_ids_to_add)
-        cdh_parcel.wait_for_stage('ACTIVATED', timeout=120, time_to_success=10)
+        cdh_parcel.wait_for_stage('ACTIVATED', timeout=600, time_to_success=10)
 
         # Create and apply a host template to ensure that all the secondary nodes have the same
         # CM roles running on them.
@@ -279,7 +279,7 @@ def main(args):
                                        start_roles=False,
                                        host_ids=host_ids_to_add)
     else:
-        cdh_parcel.wait_for_stage('ACTIVATED', timeout=120, time_to_success=10)
+        cdh_parcel.wait_for_stage('ACTIVATED', timeout=600, time_to_success=10)
 
     if args.java:
         java_home = '/usr/java/{}'.format(args.java)
@@ -1149,7 +1149,7 @@ def _wait_for_cm_server(primary_node):
         raise TimeoutError('Timed out after {} seconds waiting '
                            'for Cloudera Manager to start.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[primary_node.container],
-                       time_between_checks=3, timeout=180, success=success, failure=failure)
+                       time_between_checks=3, timeout=360, success=success, failure=failure)
 
 
 def _create_secondary_node_template(deployment, cluster_name, secondary_node):
@@ -1216,7 +1216,7 @@ def _update_hive_metastore_namenodes(deployment, cluster_name):
         raise TimeoutError('Timed out after {} seconds waiting '
                            'for Hive Metastore Namenodes to update.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, command_id],
-                       time_between_checks=3, timeout=180, success=success, failure=failure)
+                       time_between_checks=3, timeout=360, success=success, failure=failure)
 
 
 def _start_cm_service(deployment):
@@ -1238,7 +1238,7 @@ def _start_cm_service(deployment):
         raise TimeoutError('Timed out after {} seconds waiting '
                            'for CM service to start.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, command_id],
-                       time_between_checks=3, timeout=180, success=success, failure=failure)
+                       time_between_checks=3, timeout=360, success=success, failure=failure)
 
 
 def _validate_service_health(deployment, cluster_name):
@@ -1264,7 +1264,7 @@ def _validate_service_health(deployment, cluster_name):
         raise TimeoutError('Timed out after {} seconds waiting '
                            'to validate service health.'.format(timeout))
     wait_for_condition(condition=condition, condition_args=[deployment, cluster_name],
-                       time_between_checks=3, timeout=600, time_to_success=30,
+                       time_between_checks=3, timeout=1200, time_to_success=30,
                        success=success, failure=failure)
 
 
