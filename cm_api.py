@@ -426,6 +426,21 @@ class ApiClient:
                                                              cluster_name,
                                                              service_name)).json()
 
+    def stop_cluster_service(self, cluster_name, service_name):
+        """Stop a cluster service.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the service.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        return self._post(endpoint=('{}/clusters/{}/services/{}/'
+                                    'commands/stop').format(self.api_version,
+                                                            cluster_name,
+                                                            service_name)).json()
+
     def update_all_hosts_config(self, config_list):
         """Update the default configuration values for all hosts.
 
@@ -452,6 +467,25 @@ class ApiClient:
                                     'hiveUpdateMetastoreNamenodes').format(self.api_version,
                                                                            cluster_name,
                                                                            service_name)).json()
+
+    def format_hdfs_namenodes(self, cluster_name, service_name):
+        """Format HDFS NameNodes.
+
+        Args:
+            cluster_name (:obj:`str`): The name of the cluster.
+            service_name (:obj:`str`): The name of the HDFS service.
+
+        Returns:
+            A dictionary (command) of the submitted command.
+        """
+        role_name = [role['name'] for role in self.get_service_roles(cluster_name, service_name)['items']
+                     if role['type'] == 'NAMENODE']
+        role_name_list = {'items': role_name}
+        return self._post(endpoint=('{}/clusters/{}/services/{}/roleCommands/'
+                                    'hdfsFormat').format(self.api_version,
+                                                         cluster_name,
+                                                         service_name),
+                          data=role_name_list).json()
 
     def get_cm_config(self, view='summary'):
         """Get CM configuration values.

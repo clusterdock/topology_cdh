@@ -143,7 +143,7 @@ class ClouderaManagerCluster:
             raise TimeoutError('Timed out after {} seconds waiting for {} parcel with {} version'
                                ' in the {} stage.'.format(timeout, product, version, stage))
         wait_for_condition(condition=condition, condition_args=[product, version, stage],
-                           time_between_checks=3, timeout=180, success=success, failure=failure)
+                           time_between_checks=3, timeout=540, success=success, failure=failure)
 
     def deploy_client_config(self):
         command_id = self.api_client.deploy_cluster_client_config(cluster_name=self.name)['id']
@@ -602,6 +602,16 @@ class ClouderaManagerDeployment:
         command_id = self.api_client.start_cluster_service(cluster_name=cluster_name,
                                                            service_name=service_name)['id']
         _wait_for_command(self, command_id, timeout)
+
+    def stop_service(self, cluster_name, service_name, timeout=180):
+        command_id = self.api_client.stop_cluster_service(cluster_name=cluster_name,
+                                                          service_name=service_name)['id']
+        _wait_for_command(self, command_id, timeout)
+
+    def format_hdfs_namenodes(self, cluster_name, service_name):
+        command_id = self.api_client.format_hdfs_namenodes(cluster_name,
+                                                           service_name)['items'][0]['id']
+        _wait_for_command(self, command_id, timeout=360)
 
 
 def _wait_for_command(object, command_id, timeout=180):
