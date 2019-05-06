@@ -23,8 +23,9 @@ DATAPROTECTOR_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-dataprotector-lib-{
 EARLIEST_SDC_VERSION_WITH_LEGACY_MANIFEST = (3, 0, 0, 0)
 NAVIGATOR_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-cm_{}_{}-lib'
 
-IMAGE_NAME_TEMPLATE = '{}/{}/clusterdock:topology_cdh-streamsets_datacollector-{}'
-IMAGE_NAME_NO_REGISTRY_TEMPLATE = '{}/clusterdock:topology_cdh-streamsets_datacollector-{}'
+FULL_IMAGE_NAME_TEMPLATE = '{}/{}/clusterdock:topology_cdh-streamsets_datacollector-{}-el{}'
+# This is image name without registry.
+IMAGE_NAME_TEMPLATE = '{}/clusterdock:topology_cdh-streamsets_datacollector-{}-el{}'
 
 SDC_PORT = 18630
 PROPERTIES_FOR_NAVIGATOR = """lineage.publishers=navigator
@@ -48,22 +49,15 @@ docker_client = docker.from_env(timeout=300)
 
 class StreamsetsDataCollector:
 
-    def __init__(self, version, namespace, registry):
-        self._image_name = IMAGE_NAME_TEMPLATE.format(registry, namespace, version)
-        self.image_name_no_registry = IMAGE_NAME_NO_REGISTRY_TEMPLATE.format(namespace, version)
-        self.namespace = namespace
-        self.registry = registry
-        self.version = version
-        self.version_tuple = tuple(int(i) if i.isdigit() else i for i in version.split('.'))
-        self._user_libs_exist = False
-
-    @property
-    def image_name(self):
-        return self._image_name
-
-    @property
-    def user_libs_exist(self):
-        return self._user_libs_exist
+    def __init__(self, version, namespace, registry, os_major_version):
+        self._os_major_version = os_major_version
+        self.full_image_name = FULL_IMAGE_NAME_TEMPLATE.format(registry, namespace, version, os_major_version)
+        self._image_name = IMAGE_NAME_TEMPLATE.format(namespace, version, os_major_version)
+        self._namespace = namespace
+        self._registry = registry
+        self._version = version
+        self._version_tuple = tuple(int(i) if i.isdigit() else i for i in version.split('.'))
+        self.user_libs_exist = False
 
     def get_navigator_stage_lib(self, cm_version, additional_stage_libs_version=None):
         """ Returns name of navigator stage lib name.
@@ -80,8 +74,8 @@ class StreamsetsDataCollector:
         cm_version_tuple = tuple(cm_version.split('.'))
         navigator_stage_lib_prefix = NAVIGATOR_STAGE_LIB_TEMPLATE.format(*cm_version_tuple[:2])
         navigator_stage_lib = ('{}-{}'.format(navigator_stage_lib_prefix, additional_stage_libs_version))
-        self._user_libs_exist = True
-        return '{}/{}/additional-datacollector-libs:{}'.format(self.registry, self.namespace, navigator_stage_lib)
+        self.user_libs_exist = True
+        return '{}/{}/additional-datacollector-libs:{}'.format(self._registry, self._namespace, navigator_stage_lib)
 
     def get_dataprotector_stage_lib(self, additional_stage_libs_version=None):
         """ Returns name of dataprotector stage lib name.
@@ -95,24 +89,24 @@ class StreamsetsDataCollector:
         if not additional_stage_libs_version:
             return ''
         stage_lib_name = DATAPROTECTOR_STAGE_LIB_TEMPLATE.format(additional_stage_libs_version)
-        self._user_libs_exist = True
-        return '{}/{}/additional-datacollector-libs:{}'.format(self.registry, self.namespace, stage_lib_name)
+        self.user_libs_exist = True
+        return '{}/{}/additional-datacollector-libs:{}'.format(self._registry, self._namespace, stage_lib_name)
 
     def _get_legacy_libs(self):
         """Fetch the legacy stage libs from label of the SDC parcel image. Returns it as a string."""
-        if self.version_tuple < EARLIEST_SDC_VERSION_WITH_LEGACY_MANIFEST:
+        if self._version_tuple < EARLIEST_SDC_VERSION_WITH_LEGACY_MANIFEST:
             # No legacy stage libs list is available.
             return None
         # Inspect the image and get the value for label called 'legacy-libs'.
         # This label is set while the image of SDC parcel was built.
         try:
-            inspect_image_results = docker_client.api.inspect_image(self.image_name_no_registry)
+            inspect_image_results = docker_client.api.inspect_image(self._image_name)
         except docker.errors.NotFound as not_found:
             if (not_found.response.status_code == 404 and
                     'No such image' in not_found.explanation):
-                logger.info('Could not find %s locally. Attempting to pull ...', self.image_name_no_registry)
-                docker_client.images.pull(self.image_name_no_registry)
-                inspect_image_results = docker_client.api.inspect_image(self.image_name_no_registry)
+                logger.info('Could not find %s locally. Attempting to pull ...', self._image_name)
+                docker_client.images.pull(self._image_name)
+                inspect_image_results = docker_client.api.inspect_image(self._image_name)
 
         image_labels = inspect_image_results['ContainerConfig']['Labels']
         return image_labels.get('legacy-libs', None)
@@ -156,6 +150,6 @@ class StreamsetsDataCollector:
         if result == []:
             return result
         else:
-            self._user_libs_exist = True
-            return ['{}/{}/datacollector-libs:{}-{}'.format(self.registry, self.namespace,
-                                                            item, self.version) for item in result]
+            self.user_libs_exist = True
+            return ['{}/{}/datacollector-libs:{}-{}'.format(self._registry, self._namespace,
+                                                            item, self._version) for item in result]

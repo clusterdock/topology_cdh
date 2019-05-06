@@ -15,7 +15,8 @@
 import argparse
 import logging
 import subprocess
-from pathlib import Path
+from collections import namedtuple
+from os.path import dirname, join, realpath
 
 import requests
 
@@ -28,12 +29,16 @@ CSD_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/csd/STREAMSETS-{0}.
 DEFAULT_S3_BUCKET = 'nightly.streamsets.com'
 DEFAULT_BUILD = 'latest'
 EARLIEST_SDC_VERSION_WITH_LEGACY_MANIFEST = (3, 0, 0, 0)
+EL_VERSIONS = ['el6', 'el7']
 IMAGE_NAME_TEMPLATE = 'streamsets/clusterdock:topology_cdh-streamsets_datacollector-{}'
 LEGACY_STAGE_LIBS_INDEX_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/legacy/index.html'
-PARCEL_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/parcel/STREAMSETS_DATACOLLECTOR-{0}-el6.parcel'
+PARCEL_URL_TEMPLATE = ('http://{s3_bucket}/datacollector/{build}/parcel/'
+                       'STREAMSETS_DATACOLLECTOR-{sdc_version}-{el_version}.parcel')
 PARCEL_MANIFEST_URL_TEMPLATE = 'http://{s3_bucket}/datacollector/{build}/parcel/manifest.json'
 # Name of service in CDH cluster.
 SDC_PRODUCT_NAME = 'STREAMSETS_DATACOLLECTOR'
+
+ParcelDockerImage = namedtuple('ParcelDockerImage', ['name', 'parcel_url', 'tag'])
 
 
 def main():
@@ -54,43 +59,64 @@ def main():
     parser.add_argument('-p', '--push', help='Push Docker images after building', action='store_true')
     args = parser.parse_args()
 
-    image_folder = Path(Path(__file__).parent, 'cloudera_service').resolve()
-
     if args.dry_run:
         logger.info('Doing dry-run of tool ...')
 
     sdc_version = _get_sdc_version(PARCEL_MANIFEST_URL_TEMPLATE.format(build=args.sdc_build,
                                                                        s3_bucket=args.sdc_s3_bucket))
+
+    images = _get_sdc_images(args, sdc_version)
+    _build_and_push_images(args, images, sdc_version)
+
+
+def _build_and_push_images(args, images, sdc_version):
+    image_folder = join(realpath(dirname(__file__)), 'cloudera_service')
+    legacy_libs_index = _get_legacy_stage_libs_index(sdc_version, args.sdc_build, args.sdc_s3_bucket)
+    csd_url = CSD_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
+
+    for image in images:
+        cmd = ('docker build -t {image_name} --label "legacy-libs={legacy_libs_index}" --build-arg CSD_URL={csd_url}'
+               ' --build-arg PARCEL_URL={image_parcel_url} --build-arg PRODUCT={product_name} {image_folder}')
+        cmd = cmd.format(image_name=image.name,
+                         legacy_libs_index=legacy_libs_index,
+                         csd_url=csd_url,
+                         image_parcel_url=image.parcel_url,
+                         product_name=SDC_PRODUCT_NAME,
+                         image_folder=image_folder)
+        logger.debug('Running Docker build command (%s) ...', cmd)
+        if not args.dry_run:
+            subprocess.run(cmd, shell=True, check=True)
+
+        cmd = 'docker tag {} {}'.format(image.name, image.tag)
+        logger.debug('Running Docker tag command (%s)...', cmd)
+        if not args.dry_run:
+            subprocess.run(cmd, shell=True, check=True)
+
+        if args.push:
+            for item in [image.name, image.tag]:
+                cmd = 'docker push {}'.format(item)
+                logger.debug('Running Docker push command (%s) ...', cmd)
+                if not args.dry_run:
+                    subprocess.run(cmd, shell=True, check=True)
+
+
+def _get_sdc_images(args, sdc_version):
+    images = []
     tag_version = args.sdc_version_tag or sdc_version
     image_name = IMAGE_NAME_TEMPLATE.format(tag_version)
     tag = IMAGE_NAME_TEMPLATE.format('{}-latest'.format(tag_version.split('-')[0]))
-    csd_url = CSD_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
-    parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version, build=args.sdc_build, s3_bucket=args.sdc_s3_bucket)
 
-    legacy_libs_index = _get_legacy_stage_libs_index(sdc_version, args.sdc_build, args.sdc_s3_bucket)
-
-    cmd_elements = ['docker build -t {}'.format(image_name),
-                    '--label "legacy-libs={}"'.format(legacy_libs_index),
-                    '--build-arg CSD_URL={}'.format(csd_url),
-                    '--build-arg PARCEL_URL={}'.format(parcel_url),
-                    '--build-arg PRODUCT={}'.format(SDC_PRODUCT_NAME),
-                    str(image_folder)]
-    cmd = ' '.join(cmd_elements)
-    logger.debug('Running Docker build command (%s) ...', cmd)
-    if not args.dry_run:
-        subprocess.run(cmd, shell=True, check=True)
-
-    cmd = 'docker tag {} {}'.format(image_name, tag)
-    logger.debug('Running Docker tag command (%s)...', cmd)
-    if not args.dry_run:
-        subprocess.run(cmd, shell=True, check=True)
-
-    if args.push:
-        for item in [image_name, tag]:
-            cmd = 'docker push {}'.format(item)
-            logger.debug('Running Docker push command (%s) ...', cmd)
-            if not args.dry_run:
-                subprocess.run(cmd, shell=True, check=True)
+    for el_version in EL_VERSIONS:
+        el_image_name = '{}-{}'.format(image_name, el_version)
+        el_tag = '{}-{}'.format(tag, el_version)
+        parcel_url = PARCEL_URL_TEMPLATE.format(sdc_version=sdc_version,
+                                                build=args.sdc_build,
+                                                s3_bucket=args.sdc_s3_bucket,
+                                                el_version=el_version)
+        images.append(ParcelDockerImage(name=el_image_name,
+                                        parcel_url=parcel_url,
+                                        tag=el_tag))
+    return images
 
 
 def _get_legacy_stage_libs_index(sdc_version, build, s3_bucket):
