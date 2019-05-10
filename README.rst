@@ -13,6 +13,9 @@ Assuming you've already installed **clusterdock** (if not, go `read the docs`_),
 you use this topology by cloning it to a local folder and then running commands
 with the ``clusterdock`` script:
 
+For instructions on building the Docker images for the CDH nodes, refer to the
+``BUILDING_CDH_IMAGES.md`` file.
+
 .. _read the docs: http://clusterdock.readthedocs.io/en/latest/
 
 .. code-block:: console
