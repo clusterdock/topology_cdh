@@ -52,7 +52,7 @@ LINUX_USER_ID_START = 1000
 EARLIEST_CDH_VERSION_WITH_KAFKA = (6, 0, 0)
 EARLIEST_CDH_VERSION_WITH_KUDU = (5, 13, 0)
 EARLIEST_CDH_VERSION_WITH_SPARK2 = (6, 0, 0)
-EARLIEST_CDH_VERSION_WITH_CENTOS7 = (6, 1, 1)
+EARLIEST_CDH_VERSION_WITH_CENTOS6_8 = (6, 1, 1)
 
 KUDU_PARCEL_VERSION_REGEX = r'(.*)-.*\.cdh(.*)\.p'
 KAFKA_PARCEL_REPO_URL = 'https://archive.cloudera.com/kafka/parcels'
@@ -132,12 +132,6 @@ def main(args):
             node.volumes.append(java_image)
 
     cdh_version_tuple = tuple(int(i) if i.isdigit() else i for i in args.cdh_version.split('.'))
-    if cdh_version_tuple >= EARLIEST_CDH_VERSION_WITH_CENTOS7:
-        for node in nodes:
-            node.volumes.append({'/sys/fs/cgroup': '/sys/fs/cgroup'})
-            # do not use tempfile.mkdtemp, as systemd wont be able to bring services up when temp ends to be created in
-            # /var/tmp/ directory
-            node.volumes.append(['/run', '/run/lock'])
 
     # Gather services to add depending on values of --include-services and --exclude-services.
     # These services accept version as arguments e.g. kafka_version, kudu_version.
@@ -225,7 +219,7 @@ def main(args):
                              '/dfs*/dn/current/*'])
 
     logger.info('Restarting Cloudera Manager agents ...')
-    _restart_cm_agents(nodes)
+    _restart_cm_agents(nodes, cdh_version_tuple)
 
     logger.info('Waiting for Cloudera Manager server to come online ...')
     _wait_for_cm_server(primary_node)
@@ -333,10 +327,6 @@ def main(args):
         _update_hive_metastore_namenodes(deployment=deployment,
                                          cluster_name=DEFAULT_CLUSTER_NAME)
 
-    centos_major_version = primary_node.execute("rpm -q --queryformat '%{VERSION}' centos-release", quiet=True)
-    if centos_major_version.output == '7' and 'HDFS' in cluster_service_types:
-        _format_hdfs_namenodes(deployment, DEFAULT_CLUSTER_NAME, primary_node)
-
     # Whether a user requests a service version or not, we always begin by removing it from the
     # cluster services list (if present) so that configurations can always be generated anew.
     for service in deployment.get_cluster_services(cluster_name=DEFAULT_CLUSTER_NAME):
@@ -403,27 +393,6 @@ def main(args):
                                cluster_name=DEFAULT_CLUSTER_NAME,
                                cluster=cluster, quiet=not args.verbose,
                                kerberos_principals=args.kerberos_principals)
-
-
-def _format_hdfs_namenodes(deployment, cluster_name, primary_node):
-    logger.info('Formatting HDFS NameNodes ...')
-    for service in deployment.get_cluster_services(cluster_name=cluster_name):
-        if service['type'] == 'HDFS':
-            service_name = service['name']
-            break
-
-    deployment.format_hdfs_namenodes(cluster_name, service_name)
-    deployment.start_service(cluster_name=cluster_name, service_name=service_name)
-    primary_node.execute('sudo -u hdfs hdfs dfsadmin -safemode wait')
-    commands = ['sudo -u hdfs hdfs dfs -mkdir /user',
-                'sudo -u hdfs hdfs dfs -mkdir /user/spark',
-                'sudo -u hdfs hdfs dfs -mkdir /user/spark/applicationHistory',
-                'sudo -u hdfs hdfs dfs -mkdir -p /user/history',
-                'sudo -u hdfs hdfs dfs -chmod -R 1777 /user/history',
-                'sudo -u hdfs hdfs dfs -chown mapred:hadoop /user/history',
-                'sudo -u hdfs hdfs dfs -chmod 777 /']
-    primary_node.execute(' && '.join(commands))
-    deployment.stop_service(cluster_name=cluster_name, service_name=service_name)
 
 
 def _is_service_to_add(service_type, include_services, exclude_services):
@@ -1158,13 +1127,13 @@ def _remove_files(nodes, files):
         node.execute(command=command)
 
 
-def _restart_cm_agents(nodes):
+def _restart_cm_agents(nodes, cdh_version_tuple):
     # Supervisor issues were seen when restarting the SCM agent;
     # doing a clean_restart and disabling quiet mode for the execution
     # were empirically determined to be necessary.
     centos_major_version = nodes[0].execute("rpm -q --queryformat '%{VERSION}' centos-release", quiet=True)
 
-    command = ('service cloudera-scm-agent restart' if centos_major_version.output == '7'
+    command = ('service cloudera-scm-agent restart' if cdh_version_tuple >= EARLIEST_CDH_VERSION_WITH_CENTOS6_8
                else 'service cloudera-scm-agent clean_restart_confirmed')
     for node in nodes:
         node.execute(command=command, quiet=False)
