@@ -12,27 +12,28 @@ This section describes the steps required to complete this image creation proces
 
 ### Steps
 
-1. For CDH 5.x, Start two-node nodebase cluster, forwarding port 7180 on `node-1`to the host:
+1. Start two-node nodebase cluster, forwarding port 7180 on `node-1`to the host:
+
+    i) For CDH 5.x:
     `clusterdock start topology_nodebase -p 'node-1:7180->7180'`
 
-    1. For CDH 6.x, use `-o centos7.4` like following:
-    `git clone https://github.com/clusterdock/topology_nodebase`
-    1. Add following lines to `topology_nodebase/start.py`:
-        ```
-        if 'centos7' in args.operating_system:
-                for node in cluster.nodes:
-                    node.volumes.append({'/sys/fs/cgroup': '/sys/fs/cgroup'})
-                    # do not use tempfile.mkdtemp, as systemd wont be able to bring services up when temp ends to be created in
-                    # /var/tmp/ directory
-                    node.volumes.append(['/run', '/run/lock'])
-         Before line cluster.start(args.network)
-        ```
-    1. Start two-node nodebase cluster with CentOS 7.4:
+    ii) For CDH 6.x, use `-o centos6.8` like following:
     ```
-    clusterdock start topology_nodebase -p 'node-1:7180->7180' -o centos7.4
+    clusterdock start topology_nodebase -p 'node-1:7180->7180' -o centos6.8
     ```
 1. SSH into each node (using `clusterdock ssh`) and prepare environment for CM requirements around mounted directories: \
 `for i in /etc/hosts /etc/resolv.conf /etc/hostname /etc/localtime; do /bin/cp -f ${i} ${i}.1; umount ${i}; /bin/mv -f ${i}.1 ${i}; done; /bin/cp -f /usr/share/zoneinfo/UTC /etc/localtime`
+1. SSH into each node (using `clusterdock ssh`) and install Python 2.7. Hue requires that. Since Hue is not installed in this process, this is optional but did it since this is helpful if someone wants to install Hue after cluster start.
+    ```
+       yum -y install centos-release-scl scl-utils
+       yum -y install python27
+       source /opt/rh/python27/enable
+       python --version
+    ```
+1. Impala requires database connector for Hive Metastore. This installation uses embedded Database which is PostgreSQL. Hence download the PostgreSQL connector and place it in the /usr/share/java/
+    ```mkdir /usr/share/java
+       wget -P /usr/share/java https://jdbc.postgresql.org/download/postgresql-42.2.5.jar
+    ```
 1. Go back to `node-1` and get/run the installer:
     - Installer
         - For CDH 5.x,
@@ -52,7 +53,7 @@ This section describes the steps required to complete this image creation proces
     - `rm -f ./cloudera-manager-installer.bin`
 1. Open your web browser and go to `<host>:7180` to continue the installation.
 1. Choose to install Cloudera Express and tell the installer to use both nodes started as part of the nodebase cluster (enter `node-1.cluster` `node-2.cluster` in box). During the installation process, tell the wizard to use parcels. When prompted, install Oracle JDK (for CDH 6.x, make sure to accept 2 licenses under JDK, second one is for Install Java Unlimited Strength Encryption Policy Files), don't enable single user mode, and point the installation at the nodebase private SSH key.
-1. For CDH 6.0.1 and CDH 6.1.1, before ‘Inspect Hosts’ screen, install psycopg2 version above 2.5.4 on all nodes of cluster. Hue requires that. Since we do not install Hue, this is optional but I did it since this is helpful if someone wants to install Hue after cluster start.
+1. For CDH 6.0.1 and CDH 6.1.1, before ‘Inspect Hosts’ screen, install psycopg2 version above 2.5.4 on all nodes of cluster. Hue requires that. Since Hue is not installed in this process, this is optional but did it since this is helpful if someone wants to install Hue after cluster start.
     ```
     yum install -y epel-release 
     yum install -y python-pip

@@ -161,11 +161,9 @@ def main(args):
 
     if args.sdc_version:
         logger.info('args.sdc_version = %s', args.sdc_version)
-        os_major_version = 7 if cdh_version_tuple >= EARLIEST_CDH_VERSION_WITH_CENTOS7 else 6
         data_collector = sdc.StreamsetsDataCollector(args.sdc_version,
                                                      args.namespace or DEFAULT_NAMESPACE,
-                                                     args.registry,
-                                                     os_major_version)
+                                                     args.registry)
         sdc_parcel_image = data_collector.full_image_name
         logger.debug('Adding SDC parcel image %s to CM nodes ...', sdc_parcel_image)
         for node in nodes:

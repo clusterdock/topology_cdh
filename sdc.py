@@ -20,6 +20,7 @@ APACHE_KUDU_LEGACY_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-apache-kudu_{}
 CDH_KAFKA_LEGACY_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-cdh_kafka_{}_{}-lib'
 CDH_LEGACY_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-cdh_{}_{}-lib'
 DATAPROTECTOR_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-dataprotector-lib-{}'
+DEFAULT_OS_MAJOR_VERSION = 6  # Currently CDH images are based on CentOS 6.x and hence this is 6.
 EARLIEST_SDC_VERSION_WITH_LEGACY_MANIFEST = (3, 0, 0, 0)
 NAVIGATOR_STAGE_LIB_TEMPLATE = 'streamsets-datacollector-cm_{}_{}-lib'
 
@@ -49,7 +50,7 @@ docker_client = docker.from_env(timeout=300)
 
 class StreamsetsDataCollector:
 
-    def __init__(self, version, namespace, registry, os_major_version):
+    def __init__(self, version, namespace, registry, os_major_version=DEFAULT_OS_MAJOR_VERSION):
         self._os_major_version = os_major_version
         self.full_image_name = FULL_IMAGE_NAME_TEMPLATE.format(registry, namespace, version, os_major_version)
         self._image_name = IMAGE_NAME_TEMPLATE.format(namespace, version, os_major_version)
